@@ -2,10 +2,9 @@
 
 use crate::euclidean::EuclideanVector;
 use crate::generic_hmc::HamiltonianTarget;
-use crate::stats::{collect_rhat, ChainStats, ChainTracker, RunStats};
+use crate::stats::{collect_rhat, max_skipnan, ChainStats, ChainTracker, RunStats};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use ndarray::{s, Array2, Array3, ArrayView1, ArrayView2, Axis};
-use ndarray_stats::QuantileExt;
 use num_traits::{Float, FromPrimitive, One, ToPrimitive, Zero};
 use rand::distr::Distribution as RandDistribution;
 // rand_distr provides the distributions, but we rely on rand's Distribution trait for compatibility.
@@ -136,7 +135,7 @@ where
                 let valid: Vec<&ChainStats> = most_recent.iter().flatten().collect();
                 if valid.len() >= 2 {
                     let rhats = collect_rhat(valid.as_slice());
-                    let max = rhats.max_skipnan();
+                    let max = max_skipnan(&rhats);
                     global_pb.set_message(format!(
                         "p(accept)≈{:.2} max(rhat)≈{:.2}",
                         avg_p_accept, max

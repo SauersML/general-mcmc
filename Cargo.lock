@@ -881,7 +881,7 @@ dependencies = [
  "libm",
  "macerator",
  "matrixmultiply",
- "ndarray",
+ "ndarray 0.16.1",
  "num-traits",
  "paste",
  "portable-atomic-util",
@@ -3619,7 +3619,7 @@ dependencies = [
  "burn",
  "csv",
  "indicatif",
- "ndarray",
+ "ndarray 0.17.1",
  "ndarray-stats",
  "num-traits",
  "parquet",
@@ -3721,6 +3721,22 @@ version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "882ed72dce9365842bf196bdeedf5055305f11fc8c03dee7bb0194a6cad34841"
 dependencies = [
+ "matrixmultiply",
+ "num-complex",
+ "num-integer",
+ "num-traits",
+ "portable-atomic",
+ "portable-atomic-util",
+ "rawpointer",
+ "rayon",
+]
+
+[[package]]
+name = "ndarray"
+version = "0.17.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c7c9125e8f6f10c9da3aad044cc918cf8784fa34de857b1aa68038eb05a50a9"
+dependencies = [
  "approx",
  "matrixmultiply",
  "num-complex",
@@ -3740,7 +3756,7 @@ checksum = "17ebbe97acce52d06aebed4cd4a87c0941f4b2519b59b82b4feb5bd0ce003dfd"
 dependencies = [
  "indexmap 2.11.4",
  "itertools 0.13.0",
- "ndarray",
+ "ndarray 0.16.1",
  "noisy_float",
  "num-integer",
  "num-traits",
@@ -5440,7 +5456,7 @@ dependencies = [
  "half",
  "lazy_static",
  "libc",
- "ndarray",
+ "ndarray 0.16.1",
  "rand 0.8.5",
  "safetensors 0.3.3",
  "thiserror 1.0.69",

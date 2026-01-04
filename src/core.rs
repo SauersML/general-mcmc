@@ -13,12 +13,11 @@ Any type implementing [`HasChains<T>`] (with the required trait bounds) automati
 This module is generic over the state type using [`ndarray::LinalgScalar`].
 */
 
-use crate::stats::{collect_rhat, ChainStats, ChainTracker, RunStats};
+use crate::stats::{collect_rhat, max_skipnan, ChainStats, ChainTracker, RunStats};
 use indicatif::ProgressBar;
 use indicatif::{MultiProgress, ProgressStyle};
 use ndarray::stack;
 use ndarray::{prelude::*, LinalgScalar, ShapeError};
-use ndarray_stats::QuantileExt;
 use num_traits::{Float, FromPrimitive};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -291,7 +290,7 @@ where
                 let valid: Vec<&ChainStats> = most_recent.iter().flatten().collect();
                 if valid.len() >= 2 {
                     let rhats = collect_rhat(valid.as_slice());
-                    let max = rhats.max_skipnan();
+                    let max = max_skipnan(&rhats);
                     global_pb.set_message(format!(
                         "p(accept)≈{:.2} max(rhat)≈{:.2}",
                         avg_p_accept, max

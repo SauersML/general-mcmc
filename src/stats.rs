@@ -3,7 +3,6 @@
 
 use core::fmt;
 use ndarray::{concatenate, prelude::*, stack};
-use ndarray_stats::QuantileExt;
 use num_traits::{Num, ToPrimitive};
 use rayon::prelude::*;
 use rustfft::{num_complex::Complex, FftPlanner};
@@ -151,6 +150,18 @@ pub fn collect_rhat(chain_stats: &[&ChainStats]) -> Array1<f32> {
     (var / within).sqrt()
 }
 
+/// Returns the maximum finite value in the array, ignoring any NaNs.
+///
+/// If all entries are NaN, `f32::NAN` is returned.
+pub fn max_skipnan(values: &Array1<f32>) -> f32 {
+    values
+        .iter()
+        .copied()
+        .filter(|v| !v.is_nan())
+        .reduce(f32::max)
+        .unwrap_or(f32::NAN)
+}
+
 fn withinvar_from_cs(chain_stats: &[&ChainStats]) -> (Array1<f32>, Array1<f32>) {
     let means: Vec<ArrayView1<f32>> = chain_stats.iter().map(|x| x.mean.view()).collect();
     let means = ndarray::stack(Axis(0), &means).expect("Expected stacking means to succeed");
@@ -288,7 +299,11 @@ impl MultiChainTracker {
     /// The maximum R-hat value, or an error if computation fails.
     pub fn max_rhat(&self) -> Result<f32, Box<dyn Error>> {
         let all: Array1<f32> = self.rhat()?;
-        let max = *all.max()?;
+        let max = all
+            .iter()
+            .copied()
+            .reduce(f32::max)
+            .ok_or("No R-hat values available")?;
         Ok(max)
     }
 

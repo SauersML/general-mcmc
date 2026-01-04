@@ -8,6 +8,8 @@
 
 A compact Rust library for **Markov Chain Monte Carlo (MCMC)** methods with GPU support.
 
+This is a modified version of https://github.com/MatteoGaetzner/mini-mcmc.
+
 ## Overview
 
 This library provides implementations of

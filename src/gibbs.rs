@@ -91,24 +91,16 @@ impl<S, D: Conditional<S>> MarkovChain<S> for GibbsMarkovChain<S, D> {
     ///
     /// For each coordinate `i` in `0..current_state.len()`, a new value is sampled from  
     /// the conditional distribution (provided by `target.sample(i, &current_state)`) and  
-    /// the state is updated. Returns the recorded observation for the updated state.
-    type State = Vec<S>;
-    type Record = Vec<S>;
-
-    fn step(&mut self) -> Self::Record {
+    /// the state is updated. Returns a reference to the updated state.
+    fn step(&mut self) -> &Vec<S> {
         (0..self.current_state.len())
             .for_each(|i| self.current_state[i] = self.target.sample(i, &self.current_state));
-        self.current_state.clone()
-    }
-
-    /// Returns a reference to the current state of the chain.
-    fn current_state(&self) -> &Self::State {
         &self.current_state
     }
 
-    /// Returns a record based on the current state.
-    fn current_record(&self) -> Self::Record {
-        self.current_state.clone()
+    /// Returns a reference to the current state of the chain.
+    fn current_state(&self) -> &Vec<S> {
+        &self.current_state
     }
 }
 
@@ -433,11 +425,11 @@ mod tests {
         let initial_state = [0.0, 0.0, 0.0];
         let mut chain = GibbsMarkovChain::new(conditional, &initial_state);
 
-        // Call step() and capture the returned record.
-        let returned_record = chain.step();
+        // Call step() and capture the returned reference.
+        let returned_ref = chain.step();
 
         // 1) Check that all coordinates have been updated to 42.0.
-        for &val in returned_record.iter() {
+        for &val in returned_ref.iter() {
             assert!(
                 (val - 42.0).abs() < f64::EPSILON,
                 "Expected 42.0 after step, got {}",
@@ -445,11 +437,10 @@ mod tests {
             );
         }
 
-        // 2) Check that the record matches the current state snapshot.
-        assert_eq!(
-            returned_record,
-            chain.current_record(),
-            "step() should return the recorded observation for the updated state"
+        // 2) Check that step() returns the same reference as chain.current_state().
+        assert!(
+            std::ptr::eq(returned_ref, chain.current_state()),
+            "step() should return a reference to the chain's internal state"
         );
     }
 

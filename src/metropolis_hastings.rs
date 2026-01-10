@@ -283,7 +283,7 @@ where
     A uniform random number is drawn, and if \(\log(\text{Uniform}(0,1))\) is less than
     \(\log \alpha\), the proposed state is accepted. Otherwise, the current state is retained.
 
-    The method returns the recorded observation for the updated state.
+    The method returns a reference to the updated state.
 
     # Examples
 
@@ -303,10 +303,7 @@ where
     assert_eq!(new_state.len(), 2);
     ```
     */
-    type State = Vec<T>;
-    type Record = Vec<T>;
-
-    fn step(&mut self) -> Self::Record {
+    fn step(&mut self) -> &Vec<T> {
         let proposed: Vec<T> = self.proposal.sample(&self.current_state);
         let current_lp = self.target.unnorm_logp(&self.current_state);
         let proposed_lp = self.target.unnorm_logp(&proposed);
@@ -317,17 +314,12 @@ where
         if log_accept_ratio > u.ln() {
             self.current_state = proposed;
         }
-        self.current_state.clone()
-    }
-
-    /// Returns a reference to the current state of the chain.
-    fn current_state(&self) -> &Self::State {
         &self.current_state
     }
 
-    /// Returns a record based on the current state.
-    fn current_record(&self) -> Self::Record {
-        self.current_state.clone()
+    /// Returns a reference to the current state of the chain.
+    fn current_state(&self) -> &Vec<T> {
+        &self.current_state
     }
 }
 

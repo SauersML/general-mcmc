@@ -117,7 +117,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let cutoff = 20; // enough to see the mass near lambda=4
     let mut counts = vec![0usize; cutoff + 1];
     for row in chain0.iter() {
-        let k = *row;
+        let k = *row as usize;
         if k <= cutoff {
             counts[k] += 1;
         }

@@ -3,68 +3,111 @@
 
 This module provides core functionality for running Markov Chain Monte Carlo (MCMC) chains in parallel.
 It includes:
-- The [`MarkovChain<T>`] trait, which abstracts a single MCMC chain.
-- Utility functions [`run_chain`] and [`run_chain_progress`] for executing a single chain and collecting its states.
-- The [`HasChains<T>`] trait for types that own multiple Markov chains.
-- The [`ChainRunner<T>`] trait that extends [`HasChains<T>`] with methods to run chains in parallel (using Rayon), discarding burn-in and optionally displaying progress bars.
+- The [`MarkovChain<State>`] trait, which abstracts a single MCMC chain.
+- The [`Trace`] trait for mapping a heavy chain state to lightweight diagnostics.
+- Utility functions [`run_chain`] and [`run_chain_progress`] for executing a single chain and collecting trace summaries.
+- The [`HasChains<State>`] trait for types that own multiple Markov chains.
+- The [`ChainRunner<State>`] trait that extends [`HasChains<State>`] with methods to run chains in parallel (using Rayon), discarding burn-in and optionally displaying progress bars.
 
-Any type implementing [`HasChains<T>`] (with the required trait bounds) automatically implements [`ChainRunner<T>`] via a blanket implementation.
+Any type implementing [`HasChains<State>`] (with the required trait bounds) automatically implements [`ChainRunner<State>`] via a blanket implementation.
 
-This module is generic over the state type using [`ndarray::LinalgScalar`].
+This module is generic over the chain state type and the per-step trace summaries.
 */
 
 use crate::stats::{collect_rhat, max_skipnan, ChainStats, ChainTracker, RunStats};
 use indicatif::ProgressBar;
 use indicatif::{MultiProgress, ProgressStyle};
 use ndarray::stack;
-use ndarray::{prelude::*, LinalgScalar, ShapeError};
-use num_traits::{Float, FromPrimitive};
+use ndarray::{prelude::*, ShapeError};
+use num_traits::{Float, FromPrimitive, ToPrimitive};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use rand_distr::StandardNormal;
 use rayon::prelude::*;
-use std::cmp::PartialEq;
 use std::error::Error;
 use std::marker::Send;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self};
 use std::time::{Duration, Instant};
 
+/// A lightweight summary of a chain state suitable for diagnostics.
+pub trait Trace {
+    /// Returns a vector of summary values derived from the state.
+    fn trace(&self) -> Vec<f64>;
+}
+
+impl<T> Trace for [T]
+where
+    T: ToPrimitive,
+{
+    fn trace(&self) -> Vec<f64> {
+        self.iter()
+            .map(|x| {
+                x.to_f64()
+                    .expect("Expected trace conversion to f64 to succeed")
+            })
+            .collect()
+    }
+}
+
+impl<T> Trace for Vec<T>
+where
+    T: ToPrimitive,
+{
+    fn trace(&self) -> Vec<f64> {
+        self.as_slice().trace()
+    }
+}
+
+impl Trace for f64 {
+    fn trace(&self) -> Vec<f64> {
+        vec![*self]
+    }
+}
+
+impl Trace for f32 {
+    fn trace(&self) -> Vec<f64> {
+        vec![(*self).into()]
+    }
+}
+
 /// A trait that abstracts a single MCMC chain.
 ///
-/// A type implementing [`MarkovChain<T>`] must provide:
+/// A type implementing [`MarkovChain<State>`] must provide:
 /// - `step()`: advances the chain one iteration and returns a reference to the updated state.
 /// - `current_state()`: returns a reference to the current state without modifying the chain.
-pub trait MarkovChain<T> {
+pub trait MarkovChain<State> {
     /// Performs one iteration of the chain and returns a reference to the new state.
-    fn step(&mut self) -> &Vec<T>;
+    fn step(&mut self) -> &State;
 
     /// Returns a reference to the current state of the chain without advancing it.
-    fn current_state(&self) -> &Vec<T>;
+    fn current_state(&self) -> &State;
 }
 
 /// Runs a single MCMC chain for a specified number of steps.
 ///
-/// This function repeatedly calls the chain's `step()` method and collects each state into a
-/// [`ndarray::Array2<T>`] of shape `[n_collect, D]` where:
+/// This function repeatedly calls the chain's `step()` method and collects each trace into a
+/// [`ndarray::Array2<f64>`] of shape `[n_collect, D]` where:
 /// - `n_collect`: number of observations to collect
-/// - `D`: dimensionality of the state space
+/// - `D`: dimensionality of the trace space
 ///
-/// Each row corresponds to one collected state of the chain.
-pub fn run_chain<T, M>(chain: &mut M, n_collect: usize, n_discard: usize) -> Array2<T>
+/// Each row corresponds to one collected trace of the chain.
+pub fn run_chain<S, M>(chain: &mut M, n_collect: usize, n_discard: usize) -> Array2<f64>
 where
-    M: MarkovChain<T>,
-    T: LinalgScalar,
+    M: MarkovChain<S>,
+    S: Trace,
 {
-    let dim = chain.current_state().len();
-    let mut out = Array2::<T>::zeros((n_collect, dim));
+    let current_trace = chain.current_state().trace();
+    let dim = current_trace.len();
+    let mut out = Array2::<f64>::zeros((n_collect, dim));
     let total = n_collect + n_discard;
 
     for i in 0..total {
         let state = chain.step();
         if i >= n_discard {
-            let state_arr = ArrayView::from_shape(state.len(), state.as_slice()).unwrap();
-            out.row_mut(i - n_discard).assign(&state_arr);
+            let trace = state.trace();
+            let trace_arr = ArrayView::from_shape(trace.len(), trace.as_slice()).unwrap();
+            out.row_mut(i - n_discard).assign(&trace_arr);
         }
     }
 
@@ -78,35 +121,37 @@ where
 ///
 /// # Arguments
 ///
-/// * `chain` - A mutable reference to an object implementing [`MarkovChain<T>`].
+/// * `chain` - A mutable reference to an object implementing [`MarkovChain<State>`].
 /// * `n_collect` - The number of observations to collect and return.
 /// * `n_discard` - The number of observations to discard (burn-in).
 /// * `tx` - A [`Sender<ChainStats>`] object for communication with chains-managing parent thread.
 ///
 /// # Returns
 ///
-/// A [`ndarray::Array2<T>`] containing the chain's states with `n_collect` number of rows.
-pub fn run_chain_progress<T, M>(
+/// A [`ndarray::Array2<f64>`] containing the chain's traces with `n_collect` number of rows.
+pub fn run_chain_progress<S, M>(
     chain: &mut M,
     n_collect: usize,
     n_discard: usize,
     tx: Sender<ChainStats>,
-) -> Result<Array2<T>, String>
+) -> Result<Array2<f64>, String>
 where
-    M: MarkovChain<T>,
-    T: LinalgScalar + PartialEq + num_traits::ToPrimitive,
+    M: MarkovChain<S>,
+    S: Trace,
 {
-    let n_params = chain.current_state().len();
-    let mut out = Array2::<T>::zeros((n_collect, n_params));
+    let current_trace = chain.current_state().trace();
+    let n_params = current_trace.len();
+    let mut out = Array2::<f64>::zeros((n_collect, n_params));
 
-    let mut tracker = ChainTracker::new(n_params, chain.current_state());
+    let mut tracker = ChainTracker::new(n_params, current_trace.as_slice());
     let mut last = Instant::now();
     let freq = Duration::from_secs(1);
     let total = n_discard + n_collect;
 
     for i in 0..total {
-        let current_state = chain.step();
-        tracker.step(current_state).map_err(|e| {
+        let state = chain.step();
+        let trace = state.trace();
+        tracker.step(trace.as_slice()).map_err(|e| {
             let msg = format!(
             "Chain statistics tracker caused error: {}.\nAborting generation of further observations.",
             e
@@ -124,9 +169,8 @@ where
         }
 
         if i >= n_discard {
-            out.row_mut(i - n_discard).assign(
-                &ArrayView1::from_shape(current_state.len(), current_state.as_slice()).unwrap(),
-            );
+            out.row_mut(i - n_discard)
+                .assign(&ArrayView1::from_shape(trace.len(), trace.as_slice()).unwrap());
         }
     }
 
@@ -136,8 +180,8 @@ where
 
 /// A trait for types that own multiple MCMC chains.
 ///
-/// - `T` is the type of the state elements (e.g., `f64`).
-/// - `Chain` is the concrete type of the individual chain, which must implement [`MarkovChain<T>`]
+/// - `S` is the concrete state type of the chain.
+/// - `Chain` is the concrete type of the individual chain, which must implement [`MarkovChain<S>`]
 ///   and be [`Send`].
 ///
 /// Implementors must provide a method to access the internal vector of chains.
@@ -152,14 +196,14 @@ pub trait HasChains<S> {
 ///
 /// [`ChainRunner<T>`] extends [`HasChains<T>`] by providing default methods to run all chains
 /// in parallel. These methods allow you to:
-/// - Run all chains, collect `n_collect` observations and discard `n_discard` initial burn-in observations.
+/// - Run all chains, collect `n_collect` traces and discard `n_discard` initial burn-in observations.
 /// - Optionally display progress bars for each chain during execution.
 ///
 /// Any type that implements [`HasChains<T>`] (with appropriate bounds on `T`) automatically implements
 /// [`ChainRunner<T>`].
 pub trait ChainRunner<T>: HasChains<T>
 where
-    T: LinalgScalar + PartialEq + Send + num_traits::ToPrimitive,
+    T: Trace + Send,
 {
     /// Runs all chains in parallel, discarding the first `discard` iterations (burn-in).
     ///
@@ -172,15 +216,15 @@ where
     ///
     /// A [`ndarray::Array3`] tensor with the first axis representing the chain, the second one the
     /// step and the last one the parameter dimension.
-    fn run(&mut self, n_collect: usize, n_discard: usize) -> Result<Array3<T>, ShapeError> {
+    fn run(&mut self, n_collect: usize, n_discard: usize) -> Result<Array3<f64>, ShapeError> {
         // Run them all in parallel
-        let results: Vec<Array2<T>> = self
+        let results: Vec<Array2<f64>> = self
             .chains_mut()
             .par_iter_mut()
             .map(|chain| run_chain(chain, n_collect, n_discard))
             .collect();
-        let views: Vec<ArrayView2<T>> = results.iter().map(|x| x.view()).collect();
-        let out: Array3<T> = stack(Axis(0), &views)?;
+        let views: Vec<ArrayView2<f64>> = results.iter().map(|x| x.view()).collect();
+        let out: Array3<f64> = stack(Axis(0), &views)?;
         Ok(out)
     }
 
@@ -208,7 +252,7 @@ where
         &mut self,
         n_collect: usize,
         n_discard: usize,
-    ) -> Result<(Array3<T>, RunStats), Box<dyn Error>> {
+    ) -> Result<(Array3<f64>, RunStats), Box<dyn Error>> {
         // Channels.
         // Each chain gets its own channel. Hence, we have `n_chains` channels.
         // The objects sent over channels are Array2<f32>s ($s_m^2$, $\bar{\theta}_m^{(\bullet)}$).
@@ -322,8 +366,8 @@ where
             }
         });
 
-        let chain_sample: Vec<Array2<T>> = thread::scope(|s| {
-            let handles: Vec<thread::ScopedJoinHandle<Array2<T>>> = chains
+        let chain_sample: Vec<Array2<f64>> = thread::scope(|s| {
+            let handles: Vec<thread::ScopedJoinHandle<Array2<f64>>> = chains
                 .iter_mut()
                 .zip(txs)
                 .map(|(chain, tx)| {
@@ -341,12 +385,12 @@ where
                 })
                 .collect()
         });
-        let sample: Array3<T> = stack(
+        let sample: Array3<f64> = stack(
             Axis(0),
             &chain_sample
                 .iter()
                 .map(|x| x.view())
-                .collect::<Vec<ArrayView2<T>>>(),
+                .collect::<Vec<ArrayView2<f64>>>(),
         )?;
 
         if let Err(e) = progress_handle.join() {
@@ -359,10 +403,7 @@ where
     }
 }
 
-impl<T: LinalgScalar + Send + PartialEq + num_traits::ToPrimitive, R: HasChains<T>> ChainRunner<T>
-    for R
-{
-}
+impl<T: Trace + Send, R: HasChains<T>> ChainRunner<T> for R {}
 
 /// Generates a vector of random initial positions from a standard normal distribution.
 ///

@@ -9,8 +9,6 @@ mod tests {
     use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
     use mini_mcmc::metropolis_hastings::MetropolisHastings;
     use ndarray::{arr1, arr2, Axis};
-    use ndarray_stats::CorrelationExt;
-    use ndarray_stats::QuantileExt;
 
     // Shared constants.
     const SAMPLE_SIZE: usize = 10_000;
@@ -28,6 +26,12 @@ mod tests {
         sample.to_shape((SAMPLE_SIZE, 2)).unwrap().to_owned()
     }
 
+    fn sample_covariance(sample: &ndarray::Array2<f64>) -> ndarray::Array2<f64> {
+        let mean = sample.mean_axis(Axis(0)).unwrap();
+        let centered = sample - &mean;
+        centered.t().dot(&centered) / (sample.nrows() as f64 - 1.0)
+    }
+
     /// Checks that the sampler produces sample with mean and covariance close to the target.
     #[test]
     fn test_two_d_gaussian_accept() {
@@ -41,7 +45,7 @@ mod tests {
 
         // Compute sample mean and covariance.
         let mean_mcmc = sample.mean_axis(Axis(0)).unwrap();
-        let cov_mcmc = sample.t().cov(1.0).unwrap();
+        let cov_mcmc = sample_covariance(&sample);
 
         // Check the sample mean (each component should differ by less than 0.5).
         let mean_diff = (mean_mcmc - target.mean).abs();
@@ -52,7 +56,10 @@ mod tests {
         );
 
         // Compute the maximum absolute difference in covariance.
-        let max_diff = *(cov_mcmc - target.cov).abs().max().unwrap();
+        let max_diff = (cov_mcmc - target.cov)
+            .iter()
+            .map(|x| x.abs())
+            .fold(0.0_f64, f64::max);
 
         assert!(
             max_diff < 0.5,
@@ -78,10 +85,13 @@ mod tests {
         };
 
         let sample = run_sampler(&false_target);
-        let cov_mcmc = sample.t().cov(1.0).unwrap();
+        let cov_mcmc = sample_covariance(&sample);
 
         // Compute the maximum absolute difference in covariance.
-        let max_diff = *(cov_mcmc - target.cov).abs().max().unwrap();
+        let max_diff = (cov_mcmc - target.cov)
+            .iter()
+            .map(|x| x.abs())
+            .fold(0.0_f64, f64::max);
 
         // Expect at least one element to differ by more than 1.0.
         assert!(

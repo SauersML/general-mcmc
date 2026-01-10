@@ -717,7 +717,11 @@ mod tests {
         psr.step(data0.as_slice().unwrap()).unwrap();
         psr.step(data1.as_slice().unwrap()).unwrap();
         let rhat = psr.rhat().unwrap();
-        let diff = *(rhat.clone() - expected.clone()).abs().max().unwrap();
+        let diff = rhat
+            .iter()
+            .zip(expected.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
         assert!(
             diff < tol,
             "Mismatch in Rhat. Got {:?}, expected {:?}, diff = {:?}",

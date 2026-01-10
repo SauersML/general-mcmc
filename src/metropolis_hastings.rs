@@ -197,7 +197,7 @@ where
     }
 }
 
-impl<S, T, D, Q> HasChains<S> for MetropolisHastings<S, T, D, Q>
+impl<S, T, D, Q> HasChains<Vec<S>> for MetropolisHastings<S, T, D, Q>
 where
     D: Target<S, T> + Clone + Send,
     Q: Proposal<S, T> + Clone + Send,
@@ -259,7 +259,7 @@ where
     }
 }
 
-impl<T, F, D, Q> MarkovChain<T> for MHMarkovChain<T, F, D, Q>
+impl<T, F, D, Q> MarkovChain<Vec<T>> for MHMarkovChain<T, F, D, Q>
 where
     D: Target<T, F> + Clone,
     Q: Proposal<T, F> + Clone,
@@ -331,7 +331,6 @@ mod tests {
     use crate::stats::{basic_stats, split_rhat_mean_ess, RunStats}; // from your posted stats module
     use approx::assert_abs_diff_eq;
     use ndarray::{arr1, arr2, Array3, Axis};
-    use ndarray_stats::CorrelationExt;
     use rand::rngs::SmallRng;
     use rand::SeedableRng;
 
@@ -379,7 +378,8 @@ mod tests {
 
         // Check that mean and covariance match the target distribution
         let mean = stacked.mean_axis(Axis(0)).unwrap();
-        let cov = stacked.t().cov(1.0).unwrap();
+        let centered = &stacked - &mean;
+        let cov = centered.t().dot(&centered) / (stacked.nrows() as f64 - 1.0);
 
         assert_abs_diff_eq!(mean, target.mean, epsilon = 0.3);
         assert_abs_diff_eq!(cov, target.cov, epsilon = 0.5);

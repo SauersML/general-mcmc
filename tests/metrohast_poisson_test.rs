@@ -106,8 +106,9 @@ mod tests {
         let mut counts: HashMap<i32, usize> = HashMap::new();
         for s in &sample {
             // For demonstration, we'll only look up to k=10
-            if (0..=10).contains(s) {
-                *counts.entry(*s).or_default() += 1;
+            let k = *s as i32;
+            if (0..=10).contains(&k) {
+                *counts.entry(k).or_default() += 1;
             }
         }
 
@@ -230,7 +231,8 @@ mod tests {
 
         let mut counts: HashMap<i32, usize> = HashMap::new();
         for s in &sample {
-            *counts.entry(*s).or_default() += 1;
+            let k = *s as i32;
+            *counts.entry(k).or_default() += 1;
         }
 
         let total = sample.len() as f64;

@@ -86,7 +86,7 @@ where
     }
 }
 
-impl<S, D: Conditional<S>> MarkovChain<S> for GibbsMarkovChain<S, D> {
+impl<S, D: Conditional<S>> MarkovChain<Vec<S>> for GibbsMarkovChain<S, D> {
     /// Performs one full Gibbs sweep.
     ///
     /// For each coordinate `i` in `0..current_state.len()`, a new value is sampled from  
@@ -187,7 +187,7 @@ where
     }
 }
 
-impl<S, D> HasChains<S> for GibbsSampler<S, D>
+impl<S, D> HasChains<Vec<S>> for GibbsSampler<S, D>
 where
     D: Conditional<S> + Clone + Send + Sync,
     S: std::marker::Send,

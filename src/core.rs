@@ -19,7 +19,7 @@ use indicatif::ProgressBar;
 use indicatif::{MultiProgress, ProgressStyle};
 use ndarray::stack;
 use ndarray::{prelude::*, ShapeError};
-use num_traits::{Float, FromPrimitive};
+use num_traits::{Float, FromPrimitive, ToPrimitive};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use rand_distr::StandardNormal;
@@ -36,30 +36,32 @@ pub trait Trace {
     fn trace(&self) -> Vec<f64>;
 }
 
-impl<T> Trace for T
+impl<T> Trace for [T]
 where
-    T: AsRef<[f64]>,
+    T: ToPrimitive,
 {
     fn trace(&self) -> Vec<f64> {
-        self.as_ref().to_vec()
+        self.iter()
+            .map(|x| {
+                x.to_f64()
+                    .expect("Expected trace conversion to f64 to succeed")
+            })
+            .collect()
+    }
+}
+
+impl<T> Trace for Vec<T>
+where
+    T: ToPrimitive,
+{
+    fn trace(&self) -> Vec<f64> {
+        self.as_slice().trace()
     }
 }
 
 impl Trace for f64 {
     fn trace(&self) -> Vec<f64> {
         vec![*self]
-    }
-}
-
-impl Trace for [f32] {
-    fn trace(&self) -> Vec<f64> {
-        self.iter().map(|x| (*x).into()).collect()
-    }
-}
-
-impl Trace for Vec<f32> {
-    fn trace(&self) -> Vec<f64> {
-        self.as_slice().trace()
     }
 }
 
@@ -80,51 +82,6 @@ pub trait MarkovChain<State> {
 
     /// Returns a reference to the current state of the chain without advancing it.
     fn current_state(&self) -> &State;
-}
-
-/// Extension methods for Markov chains.
-pub trait MarkovChainExt<State>: MarkovChain<State> {
-    /// Returns an iterator that advances the chain and yields successive states.
-    fn iter(&mut self) -> ChainIter<'_, Self, State>
-    where
-        Self: Sized,
-    {
-        ChainIter::new(self)
-    }
-}
-
-impl<T, State> MarkovChainExt<State> for T where T: MarkovChain<State> {}
-
-/// An iterator over successive states of a chain.
-pub struct ChainIter<'a, M, State>
-where
-    M: MarkovChain<State>,
-{
-    chain: &'a mut M,
-    _phantom: std::marker::PhantomData<State>,
-}
-
-impl<'a, M, State> ChainIter<'a, M, State>
-where
-    M: MarkovChain<State>,
-{
-    fn new(chain: &'a mut M) -> Self {
-        Self {
-            chain,
-            _phantom: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<'a, M, State> Iterator for ChainIter<'a, M, State>
-where
-    M: MarkovChain<State>,
-{
-    type Item = &'a State;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        Some(self.chain.step())
-    }
 }
 
 /// Runs a single MCMC chain for a specified number of steps.

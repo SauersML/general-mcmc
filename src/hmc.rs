@@ -347,7 +347,6 @@ mod tests {
         stats::split_rhat_mean_ess,
     };
     use ndarray::ArrayView3;
-    use ndarray_stats::QuantileExt;
 
     use super::*;
     use burn::{
@@ -698,8 +697,10 @@ mod tests {
         let data = sample.to_data();
         let array = ArrayView3::from_shape(sample.dims(), data.as_slice::<f32>().unwrap()).unwrap();
         let (split_rhat, ess) = split_rhat_mean_ess(array);
-        println!("MIN Split Rhat: {}", split_rhat.min().unwrap());
-        println!("MIN ESS: {}", ess.min().unwrap());
+        let min_rhat = split_rhat.iter().cloned().fold(f32::INFINITY, f32::min);
+        let min_ess = ess.iter().cloned().fold(f32::INFINITY, f32::min);
+        println!("MIN Split Rhat: {}", min_rhat);
+        println!("MIN ESS: {}", min_ess);
     }
 
     #[test]

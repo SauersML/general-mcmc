@@ -10,7 +10,7 @@ It includes:
 
 Any type implementing [`HasChains<T>`] (with the required trait bounds) automatically implements [`ChainRunner<T>`] via a blanket implementation.
 
-This module is generic over the state type using [`ndarray::LinalgScalar`].
+This module is generic over the recorded observation type using [`ndarray::LinalgScalar`].
 */
 
 use crate::stats::{collect_rhat, max_skipnan, ChainStats, ChainTracker, RunStats};
@@ -33,38 +33,49 @@ use std::time::{Duration, Instant};
 /// A trait that abstracts a single MCMC chain.
 ///
 /// A type implementing [`MarkovChain<T>`] must provide:
-/// - `step()`: advances the chain one iteration and returns a reference to the updated state.
+/// - `step()`: advances the chain one iteration and returns the lightweight record for that step.
 /// - `current_state()`: returns a reference to the current state without modifying the chain.
+/// - `current_record()`: returns a record based on the current state without advancing the chain.
 pub trait MarkovChain<T> {
-    /// Performs one iteration of the chain and returns a reference to the new state.
-    fn step(&mut self) -> &Vec<T>;
+    /// The internal state type of the chain.
+    type State;
+    /// The record type returned at each step for diagnostics and storage.
+    type Record: AsRef<[T]>;
+
+    /// Performs one iteration of the chain and returns the record for the new state.
+    fn step(&mut self) -> Self::Record;
 
     /// Returns a reference to the current state of the chain without advancing it.
-    fn current_state(&self) -> &Vec<T>;
+    fn current_state(&self) -> &Self::State;
+
+    /// Returns the record corresponding to the current state without advancing it.
+    fn current_record(&self) -> Self::Record;
 }
 
 /// Runs a single MCMC chain for a specified number of steps.
 ///
-/// This function repeatedly calls the chain's `step()` method and collects each state into a
+/// This function repeatedly calls the chain's `step()` method and collects each record into a
 /// [`ndarray::Array2<T>`] of shape `[n_collect, D]` where:
 /// - `n_collect`: number of observations to collect
-/// - `D`: dimensionality of the state space
+/// - `D`: dimensionality of the record space
 ///
-/// Each row corresponds to one collected state of the chain.
+/// Each row corresponds to one collected record of the chain.
 pub fn run_chain<T, M>(chain: &mut M, n_collect: usize, n_discard: usize) -> Array2<T>
 where
     M: MarkovChain<T>,
     T: LinalgScalar,
 {
-    let dim = chain.current_state().len();
+    let current_record = chain.current_record();
+    let dim = current_record.as_ref().len();
     let mut out = Array2::<T>::zeros((n_collect, dim));
     let total = n_collect + n_discard;
 
     for i in 0..total {
-        let state = chain.step();
+        let record = chain.step();
         if i >= n_discard {
-            let state_arr = ArrayView::from_shape(state.len(), state.as_slice()).unwrap();
-            out.row_mut(i - n_discard).assign(&state_arr);
+            let record_slice = record.as_ref();
+            let record_arr = ArrayView::from_shape(record_slice.len(), record_slice).unwrap();
+            out.row_mut(i - n_discard).assign(&record_arr);
         }
     }
 
@@ -96,17 +107,18 @@ where
     M: MarkovChain<T>,
     T: LinalgScalar + PartialEq + num_traits::ToPrimitive,
 {
-    let n_params = chain.current_state().len();
+    let current_record = chain.current_record();
+    let n_params = current_record.as_ref().len();
     let mut out = Array2::<T>::zeros((n_collect, n_params));
 
-    let mut tracker = ChainTracker::new(n_params, chain.current_state());
+    let mut tracker = ChainTracker::new(n_params, current_record.as_ref());
     let mut last = Instant::now();
     let freq = Duration::from_secs(1);
     let total = n_discard + n_collect;
 
     for i in 0..total {
-        let current_state = chain.step();
-        tracker.step(current_state).map_err(|e| {
+        let record = chain.step();
+        tracker.step(record.as_ref()).map_err(|e| {
             let msg = format!(
             "Chain statistics tracker caused error: {}.\nAborting generation of further observations.",
             e
@@ -124,9 +136,9 @@ where
         }
 
         if i >= n_discard {
-            out.row_mut(i - n_discard).assign(
-                &ArrayView1::from_shape(current_state.len(), current_state.as_slice()).unwrap(),
-            );
+            let record_slice = record.as_ref();
+            out.row_mut(i - n_discard)
+                .assign(&ArrayView1::from_shape(record_slice.len(), record_slice).unwrap());
         }
     }
 
@@ -136,8 +148,8 @@ where
 
 /// A trait for types that own multiple MCMC chains.
 ///
-/// - `T` is the type of the state elements (e.g., `f64`).
-/// - `Chain` is the concrete type of the individual chain, which must implement [`MarkovChain<T>`]
+/// - `S` is the scalar type stored in each per-step record (e.g., `f64`).
+/// - `Chain` is the concrete type of the individual chain, which must implement [`MarkovChain<S>`]
 ///   and be [`Send`].
 ///
 /// Implementors must provide a method to access the internal vector of chains.
@@ -152,7 +164,7 @@ pub trait HasChains<S> {
 ///
 /// [`ChainRunner<T>`] extends [`HasChains<T>`] by providing default methods to run all chains
 /// in parallel. These methods allow you to:
-/// - Run all chains, collect `n_collect` observations and discard `n_discard` initial burn-in observations.
+/// - Run all chains, collect `n_collect` records and discard `n_discard` initial burn-in observations.
 /// - Optionally display progress bars for each chain during execution.
 ///
 /// Any type that implements [`HasChains<T>`] (with appropriate bounds on `T`) automatically implements

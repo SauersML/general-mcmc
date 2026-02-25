@@ -1,14 +1,14 @@
 # Mini MCMC
 
-[![crate](https://img.shields.io/crates/v/mini-mcmc.svg)](https://crates.io/crates/mini-mcmc)
-[![docs](https://img.shields.io/docsrs/mini-mcmc)](https://docs.rs/mini-mcmc)
-![tests](https://github.com/MatteoGaetzner/mini-mcmc/actions/workflows/general.yml/badge.svg)
-![security](https://github.com/MatteoGaetzner/mini-mcmc/actions/workflows/audit.yml/badge.svg)
-[![codecov](https://codecov.io/gh/MatteoGaetzner/mini-mcmc/graph/badge.svg?token=IDLWGMMUFI)](https://codecov.io/gh/MatteoGaetzner/mini-mcmc)
+[![crate](https://img.shields.io/crates/v/general-mcmc.svg)](https://crates.io/crates/general-mcmc)
+[![docs](https://img.shields.io/docsrs/general-mcmc)](https://docs.rs/general-mcmc)
+![tests](https://github.com/MatteoGaetzner/general-mcmc/actions/workflows/general.yml/badge.svg)
+![security](https://github.com/MatteoGaetzner/general-mcmc/actions/workflows/audit.yml/badge.svg)
+[![codecov](https://codecov.io/gh/MatteoGaetzner/general-mcmc/graph/badge.svg?token=IDLWGMMUFI)](https://codecov.io/gh/MatteoGaetzner/general-mcmc)
 
 A compact Rust library for **Markov Chain Monte Carlo (MCMC)** methods with GPU support.
 
-This is a modified version of https://github.com/MatteoGaetzner/mini-mcmc.
+This is a modified version of https://github.com/MatteoGaetzner/general-mcmc.
 
 ## Overview
 
@@ -31,20 +31,20 @@ Additional features:
 
 ## Installation
 
-To add the latest version of mini-mcmc to your project:
+To add the latest version of general-mcmc to your project:
 
 ```bash
-cargo add mini-mcmc
+cargo add general-mcmc
 ```
 
-Then `use mini_mcmc` in your Rust code.
+Then `use general_mcmc` in your Rust code.
 
 ## Example: Sampling From a 2D Gaussian
 
 ```rust
-use mini_mcmc::core::ChainRunner;
-use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
-use mini_mcmc::metropolis_hastings::MetropolisHastings;
+use general_mcmc::core::ChainRunner;
+use general_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+use general_mcmc::metropolis_hastings::MetropolisHastings;
 use ndarray::{arr1, arr2};
 
 fn main() {
@@ -76,9 +76,9 @@ You can also find this example at `examples/minimal_mh.rs`.
 Below we define a custom Poisson distribution for nonnegative integer states $\{0,1,2,\dots\}$ and a basic random-walk proposal. We then run Metropolis–Hastings to sample from this distribution, collecting frequencies of $k$ after some burn-in:
 
 ```rust
-use mini_mcmc::core::ChainRunner;
-use mini_mcmc::distributions::{Proposal, Target};
-use mini_mcmc::metropolis_hastings::MetropolisHastings;
+use general_mcmc::core::ChainRunner;
+use general_mcmc::distributions::{Proposal, Target};
+use general_mcmc::metropolis_hastings::MetropolisHastings;
 use plotly::{Bar, Layout};
 use rand::Rng;
 use std::error::Error;
@@ -288,7 +288,7 @@ You can also find this example at `examples/poisson_mh.rs`.
 - **Usage**:  
   We start the chain at $k=0$, run 11,000 iterations discarding 1,000 as burn-in, and tally the final sample frequencies for $k=0 \dots 20$. They should approximate the Poisson(4.0) distribution (peak around $k=4$).
 
-With this example, you can see how to use **mini_mcmc** for **unbounded** discrete distributions via a custom random-walk proposal and a log‐PMF.
+With this example, you can see how to use **general_mcmc** for **unbounded** discrete distributions via a custom random-walk proposal and a log‐PMF.
 
 Below is an additional documentation section that you can add to your README. It first gives a minimal version of the `rosenbrock3d_hmc.rs` example for sampling using HMC. (Note that the full example also plots the sampled data interactively using Plotly.)
 
@@ -301,9 +301,9 @@ The following minimal example demonstrates how to create and run an HMC sampler 
 ```rust
 use burn::tensor::Element;
 use burn::{backend::Autodiff, prelude::Tensor};
-use mini_mcmc::core::init_det;
-use mini_mcmc::distributions::BatchedGradientTarget;
-use mini_mcmc::hmc::HMC;
+use general_mcmc::core::init_det;
+use general_mcmc::distributions::BatchedGradientTarget;
+use general_mcmc::hmc::HMC;
 use num_traits::Float;
 
 /// The 3D Rosenbrock distribution.
@@ -360,16 +360,16 @@ The following minimal example shows how to set up and run a NUTS sampler on a 2D
 ```rust
 use burn::backend::Autodiff;
 use burn::prelude::Tensor;
-use mini_mcmc::core::init;
-use mini_mcmc::distributions::Rosenbrock2D;
-use mini_mcmc::nuts::NUTS;
+use general_mcmc::core::init;
+use general_mcmc::distributions::Rosenbrock2D;
+use general_mcmc::nuts::NUTS;
 
 fn main() {
     type BackendType = Autodiff<burn::backend::NdArray>;
 
     // Create the 2D Rosenbrock target (a = 1, b = 100).
     // To sample from a custom distribution implement
-    // mini_mcmc::distributions::GradientTarget for your CustomStruct
+    // general_mcmc::distributions::GradientTarget for your CustomStruct
     let target = Rosenbrock2D { a: 1.0_f32, b: 100.0_f32 };
 
     let initial_positions = init::<f32>(4, 2);

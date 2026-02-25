@@ -36,7 +36,7 @@ error wrapped in a `Box<dyn Error>`.
 # Example
 
 ```rust
-use mini_mcmc::io::parquet::save_parquet;
+use general_mcmc::io::parquet::save_parquet;
 use ndarray::arr3;
 
 // 1 chain, 2 observations, 3 dimensions
@@ -137,7 +137,7 @@ Arrow/Parquet error occurs.
 ```rust
 use burn::tensor::Tensor;
 use burn::backend::ndarray::{NdArray, NdArrayDevice};
-use mini_mcmc::io::parquet::save_parquet_tensor;
+use general_mcmc::io::parquet::save_parquet_tensor;
 let tensor = Tensor::<NdArray, 3>::from_floats(
     [
         [[1.0, 2.0], [1.1, 2.1], [1.2, 2.2]],

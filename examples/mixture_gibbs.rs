@@ -1,9 +1,9 @@
 //! A small MCMC demo using Gibbs sampling to sample from a 2D mixture distribution.
 //! The target is a two-component Gaussian mixture (over a state [x, z]).
 
-use mini_mcmc::core::{init_det, ChainRunner};
-use mini_mcmc::distributions::Conditional;
-use mini_mcmc::gibbs::GibbsSampler;
+use general_mcmc::core::{init_det, ChainRunner};
+use general_mcmc::distributions::Conditional;
+use general_mcmc::gibbs::GibbsSampler;
 use ndarray::Axis;
 use plotly::{
     common::{MarkerSymbol, Mode},
@@ -166,7 +166,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Saved scatter plot to gibbs_scatter_plot.html");
 
     // Optionally, save sample to file (if you have an IO module).
-    // let _ = mini_mcmc::io::save_parquet(&sample, "gibbs_sample.parquet");
+    // let _ = general_mcmc::io::save_parquet(&sample, "gibbs_sample.parquet");
     // println!("Saved sample to gibbs_sample.parquet.");
 
     Ok(())

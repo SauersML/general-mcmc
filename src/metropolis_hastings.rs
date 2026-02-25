@@ -17,9 +17,9 @@ and each chain gets a unique seed by adding its index to the global seed.
 ## Example Usage
 
 ```rust
-use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
-use mini_mcmc::metropolis_hastings::MetropolisHastings;
-use mini_mcmc::core::init;
+use general_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+use general_mcmc::metropolis_hastings::MetropolisHastings;
+use general_mcmc::core::init;
 use ndarray::{arr1, arr2};
 
 // Define a 2D Gaussian target distribution with full covariance
@@ -72,9 +72,9 @@ adding the chain's index to the global seed, ensuring reproducibility.
 # Examples
 
 ```rust
-use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
-use mini_mcmc::metropolis_hastings::MetropolisHastings;
-use mini_mcmc::core::init;
+use general_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+use general_mcmc::metropolis_hastings::MetropolisHastings;
+use general_mcmc::core::init;
 use ndarray::{arr1, arr2};
 
 let target = Gaussian2D {
@@ -134,9 +134,9 @@ where
     # Examples
 
     ```rust
-    use mini_mcmc::metropolis_hastings::MetropolisHastings;
-    use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
-    use mini_mcmc::core::init;
+    use general_mcmc::metropolis_hastings::MetropolisHastings;
+    use general_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+    use general_mcmc::core::init;
     use ndarray::{arr1, arr2};
 
     let target = Gaussian2D {
@@ -173,9 +173,9 @@ where
     # Examples
 
     ```rust
-    use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
-    use mini_mcmc::metropolis_hastings::MetropolisHastings;
-    use mini_mcmc::core::init;
+    use general_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+    use general_mcmc::metropolis_hastings::MetropolisHastings;
+    use general_mcmc::core::init;
     use ndarray::{arr1, arr2};
 
     let target = Gaussian2D {
@@ -235,8 +235,8 @@ where
     # Examples
 
     ```rust
-    use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
-    use mini_mcmc::metropolis_hastings::MHMarkovChain;
+    use general_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+    use general_mcmc::metropolis_hastings::MHMarkovChain;
     use ndarray::{arr1, arr2};
 
     let target = Gaussian2D {
@@ -288,9 +288,9 @@ where
     # Examples
 
     ```rust
-    use mini_mcmc::core::{MarkovChain, init};
-    use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
-    use mini_mcmc::metropolis_hastings::MHMarkovChain;
+    use general_mcmc::core::{MarkovChain, init};
+    use general_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+    use general_mcmc::metropolis_hastings::MHMarkovChain;
     use ndarray::{arr1, arr2};
 
     let target = Gaussian2D {

@@ -8,7 +8,7 @@
 //!
 //! To use this library, add it to your project:
 //! ```bash
-//! cargo add mini-mcmc
+//! cargo add general-mcmc
 //! ```
 //!
 //! The library provides three main sampling approaches:
@@ -27,9 +27,9 @@
 //! ```rust
 //! use burn::backend::Autodiff;
 //! use burn::prelude::Tensor;
-//! use mini_mcmc::core::init;
-//! use mini_mcmc::distributions::Rosenbrock2D;
-//! use mini_mcmc::nuts::NUTS;
+//! use general_mcmc::core::init;
+//! use general_mcmc::distributions::Rosenbrock2D;
+//! use general_mcmc::nuts::NUTS;
 //!
 //! // CPU backend with autodiff (NdArray).
 //! type BackendType = Autodiff<burn::backend::NdArray>;
@@ -62,9 +62,9 @@
 //! ```rust
 //! use burn::tensor::Element;
 //! use burn::{backend::Autodiff, prelude::Tensor};
-//! use mini_mcmc::hmc::HMC;
-//! use mini_mcmc::distributions::BatchedGradientTarget;
-//! use mini_mcmc::core::init;
+//! use general_mcmc::hmc::HMC;
+//! use general_mcmc::distributions::BatchedGradientTarget;
+//! use general_mcmc::core::init;
 //! use num_traits::Float;
 //!
 //! /// The 3D Rosenbrock distribution.
@@ -126,9 +126,9 @@
 //! ## Example 3: Sampling a 2D Gaussian (Metropolis–Hastings, Continuous)
 //!
 //! ```rust
-//! use mini_mcmc::core::{ChainRunner, init};
-//! use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
-//! use mini_mcmc::metropolis_hastings::MetropolisHastings;
+//! use general_mcmc::core::{ChainRunner, init};
+//! use general_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+//! use general_mcmc::metropolis_hastings::MetropolisHastings;
 //! use ndarray::{arr1, arr2};
 //!
 //! let target = Gaussian2D {
@@ -146,9 +146,9 @@
 //! ## Example 4: Sampling a Poisson Distribution (Metropolis-Hastings, Discrete)
 //!
 //! ```rust
-//! use mini_mcmc::core::{ChainRunner, init};
-//! use mini_mcmc::distributions::{Proposal, Target};
-//! use mini_mcmc::metropolis_hastings::MetropolisHastings;
+//! use general_mcmc::core::{ChainRunner, init};
+//! use general_mcmc::distributions::{Proposal, Target};
+//! use general_mcmc::metropolis_hastings::MetropolisHastings;
 //! use rand::Rng;
 //!
 //! #[derive(Clone)]

@@ -15,7 +15,7 @@ using [`num_traits::Float`]. It also defines several traits:
 ## Examples
 
 ```rust
-use mini_mcmc::distributions::{
+use general_mcmc::distributions::{
     Gaussian2D, IsotropicGaussian, Proposal,
     Target, Normalized
 };
@@ -117,7 +117,7 @@ pub trait Normalized<T, F: Float> {
 
 /** A trait for discrete distributions whose state is represented as an index.
  ```rust
- use mini_mcmc::distributions::{Categorical, Discrete};
+ use general_mcmc::distributions::{Categorical, Discrete};
 
  // Create a categorical distribution over three categories.
  let mut cat = Categorical::new(vec![0.2f64, 0.3, 0.5]);
@@ -145,7 +145,7 @@ A 2D Gaussian distribution parameterized by a mean vector and a 2×2 covariance 
 # Example
 
 ```rust
-use mini_mcmc::distributions::{Gaussian2D, Normalized};
+use general_mcmc::distributions::{Gaussian2D, Normalized};
 use ndarray::{arr1, arr2};
 
 let mean = arr1(&[0.0, 0.0]);
@@ -333,7 +333,7 @@ Gaussian noise (`mean = 0`, `std = self.std`) to each coordinate.
 # Examples
 
 ```rust
-use mini_mcmc::distributions::{IsotropicGaussian, Proposal};
+use general_mcmc::distributions::{IsotropicGaussian, Proposal};
 
 let mut proposal: IsotropicGaussian<f64> = IsotropicGaussian::new(1.0);
 let current = vec![0.0, 0.0, 0.0]; // dimension = 3
@@ -413,7 +413,7 @@ The probabilities in `probs` should sum to 1 (or they will be normalized automat
 # Examples
 
 ```rust
-use mini_mcmc::distributions::{Categorical, Discrete};
+use general_mcmc::distributions::{Categorical, Discrete};
 
 let mut cat = Categorical::new(vec![0.2f64, 0.3, 0.5]);
 let observation = cat.sample();

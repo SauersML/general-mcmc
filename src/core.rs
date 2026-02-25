@@ -425,7 +425,7 @@ impl<T: Trace + Send, R: HasChains<T>> ChainRunner<T> for R {}
 ///
 /// # Examples
 /// ```
-/// # use mini_mcmc::core::init;
+/// # use general_mcmc::core::init;
 /// let positions: Vec<Vec<f32>> = init(5, 3);
 /// for pos in positions {
 ///     println!("{:?}", pos);

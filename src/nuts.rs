@@ -4,9 +4,9 @@
 //!
 //! ## Example: custom 2D Rosenbrock target
 //! ```rust
-//! use mini_mcmc::core::init;
-//! use mini_mcmc::distributions::GradientTarget;
-//! use mini_mcmc::nuts::NUTS;
+//! use general_mcmc::core::init;
+//! use general_mcmc::distributions::GradientTarget;
+//! use general_mcmc::nuts::NUTS;
 //! use burn::backend::{Autodiff, NdArray};
 //! use burn::prelude::*;
 //!
@@ -136,8 +136,8 @@ where
     ///
     /// ```rust
     /// # use burn::backend::{Autodiff, NdArray};
-    /// # use mini_mcmc::nuts::NUTS;
-    /// # use mini_mcmc::distributions::DiffableGaussian2D;
+    /// # use general_mcmc::nuts::NUTS;
+    /// # use general_mcmc::distributions::DiffableGaussian2D;
     /// type B = Autodiff<NdArray>;
     ///
     /// // Create a 2D Gaussian with mean [0,0] and identity covariance
@@ -196,9 +196,9 @@ where
     /// ```rust
     /// # use burn::backend::{Autodiff, NdArray};
     /// # use burn::prelude::Tensor;
-    /// # use mini_mcmc::nuts::NUTS;
-    /// # use mini_mcmc::core::init;
-    /// # use mini_mcmc::distributions::DiffableGaussian2D;
+    /// # use general_mcmc::nuts::NUTS;
+    /// # use general_mcmc::core::init;
+    /// # use general_mcmc::distributions::DiffableGaussian2D;
     /// type B = Autodiff<NdArray>;
     ///
     /// // As above, construct the sampler
@@ -267,9 +267,9 @@ where
     ///
     /// ```rust
     /// use burn::backend::{Autodiff, NdArray};
-    /// use mini_mcmc::distributions::Rosenbrock2D;
-    /// use mini_mcmc::nuts::NUTS;
-    /// use mini_mcmc::core::init;
+    /// use general_mcmc::distributions::Rosenbrock2D;
+    /// use general_mcmc::nuts::NUTS;
+    /// use general_mcmc::core::init;
     ///
     /// type B = Autodiff<NdArray>;
     ///

@@ -1,8 +1,8 @@
 use burn::tensor::Element;
 use burn::{backend::Autodiff, prelude::Tensor};
-use mini_mcmc::core::init_det;
-use mini_mcmc::distributions::BatchedGradientTarget;
-use mini_mcmc::hmc::HMC;
+use general_mcmc::core::init_det;
+use general_mcmc::distributions::BatchedGradientTarget;
+use general_mcmc::hmc::HMC;
 use num_traits::Float;
 use plotly::common::{color::Rgba, Mode};
 use plotly::layout::{AspectRatio, LayoutScene};

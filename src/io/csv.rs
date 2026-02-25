@@ -34,7 +34,7 @@ issue occurs.
 # Examples
 
 ```rust
-use mini_mcmc::io::csv::save_csv;
+use general_mcmc::io::csv::save_csv;
 use ndarray::arr3;
 
 // This matrix has 2 rows (observations) and 4 columns (dimensions).
@@ -93,7 +93,7 @@ Returns `Ok(())` if successful or an error if any I/O or CSV formatting issue oc
 ```rust
 use burn::tensor::Tensor;
 use burn::backend::ndarray::{NdArray, NdArrayDevice};
-use mini_mcmc::io::csv::save_csv_tensor;
+use general_mcmc::io::csv::save_csv_tensor;
 let tensor = Tensor::<NdArray, 3>::from_floats(
     [
         [[1.0, 2.0], [1.1, 2.1], [1.2, 2.2]],

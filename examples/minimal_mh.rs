@@ -1,6 +1,6 @@
-use mini_mcmc::core::{init_det, ChainRunner};
-use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
-use mini_mcmc::metropolis_hastings::MetropolisHastings;
+use general_mcmc::core::{init_det, ChainRunner};
+use general_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+use general_mcmc::metropolis_hastings::MetropolisHastings;
 use ndarray::{arr1, arr2};
 
 fn main() {

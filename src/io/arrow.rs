@@ -37,7 +37,7 @@ is returned if any I/O or Arrow related error occurs.
 # Example
 
 ```rust
-use mini_mcmc::io::arrow::save_arrow;
+use general_mcmc::io::arrow::save_arrow;
 use ndarray::arr3;
 
 // Suppose we have 2 chains, each with 2 observations, and 3 dimensions.

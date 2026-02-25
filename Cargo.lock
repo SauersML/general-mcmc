@@ -2552,6 +2552,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "general-mcmc"
+version = "0.8.0"
+dependencies = [
+ "approx",
+ "arrow",
+ "burn",
+ "csv",
+ "indicatif",
+ "ndarray 0.17.1",
+ "ndarray-stats",
+ "num-traits",
+ "parquet",
+ "plotly",
+ "rand 0.9.2",
+ "rand_distr",
+ "rayon",
+ "rustfft",
+ "tempfile",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3609,27 +3630,6 @@ name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
-
-[[package]]
-name = "mini-mcmc"
-version = "0.8.0"
-dependencies = [
- "approx",
- "arrow",
- "burn",
- "csv",
- "indicatif",
- "ndarray 0.17.1",
- "ndarray-stats",
- "num-traits",
- "parquet",
- "plotly",
- "rand 0.9.2",
- "rand_distr",
- "rayon",
- "rustfft",
- "tempfile",
-]
 
 [[package]]
 name = "minimal-lexical"

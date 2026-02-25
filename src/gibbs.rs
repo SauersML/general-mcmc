@@ -60,8 +60,8 @@ where
     /// # Example
     ///
     /// ```rust
-    /// use mini_mcmc::distributions::Conditional;
-    /// use mini_mcmc::gibbs::GibbsMarkovChain;
+    /// use general_mcmc::distributions::Conditional;
+    /// use general_mcmc::gibbs::GibbsMarkovChain;
     ///
     /// // For example, a dummy conditional that always returns 1.0:
     /// #[derive(Clone)]
@@ -141,9 +141,9 @@ where
     /// # Example
     ///
     /// ```rust
-    /// use mini_mcmc::distributions::Conditional;
-    /// use mini_mcmc::gibbs::GibbsSampler;
-    /// use mini_mcmc::core::init;
+    /// use general_mcmc::distributions::Conditional;
+    /// use general_mcmc::gibbs::GibbsSampler;
+    /// use general_mcmc::core::init;
     ///
     /// #[derive(Clone)]
     /// struct DummyConditional;

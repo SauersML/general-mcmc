@@ -1,7 +1,7 @@
 use burn::backend::Autodiff;
-use mini_mcmc::core::init;
-use mini_mcmc::distributions::Rosenbrock2D;
-use mini_mcmc::nuts::NUTS;
+use general_mcmc::core::init;
+use general_mcmc::distributions::Rosenbrock2D;
+use general_mcmc::nuts::NUTS;
 
 fn main() {
     // Use the CPU backend (NdArray) wrapped in Autodiff.

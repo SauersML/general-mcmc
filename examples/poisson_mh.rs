@@ -1,6 +1,6 @@
-use mini_mcmc::core::ChainRunner;
-use mini_mcmc::distributions::{Proposal, Target};
-use mini_mcmc::metropolis_hastings::MetropolisHastings;
+use general_mcmc::core::ChainRunner;
+use general_mcmc::distributions::{Proposal, Target};
+use general_mcmc::metropolis_hastings::MetropolisHastings;
 use plotly::{Bar, Layout};
 use rand::Rng;
 use std::error::Error;

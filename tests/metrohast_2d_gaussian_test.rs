@@ -4,10 +4,10 @@
 
 #[cfg(test)]
 mod tests {
-    use mini_mcmc::core::ChainRunner;
-    use mini_mcmc::distributions::Proposal;
-    use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
-    use mini_mcmc::metropolis_hastings::MetropolisHastings;
+    use general_mcmc::core::ChainRunner;
+    use general_mcmc::distributions::Proposal;
+    use general_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+    use general_mcmc::metropolis_hastings::MetropolisHastings;
     use ndarray::{arr1, arr2, Axis};
 
     // Shared constants.

@@ -1,12 +1,12 @@
 //! A small MCMC demo using Metropolis-Hastings to sample from a 2D Rosenbrock distribution,
 //! then plotting the sample.
 
-use mini_mcmc::core::{init_det, ChainRunner};
-use mini_mcmc::distributions::{IsotropicGaussian, Proposal, Target};
-use mini_mcmc::metropolis_hastings::MetropolisHastings;
+use general_mcmc::core::{init_det, ChainRunner};
+use general_mcmc::distributions::{IsotropicGaussian, Proposal, Target};
+use general_mcmc::metropolis_hastings::MetropolisHastings;
 
 // Optionally, save sample to file (if you have an IO module).
-// use mini_mcmc::io::save_parquet;
+// use general_mcmc::io::save_parquet;
 
 use ndarray::Axis;
 use num_traits::Float;

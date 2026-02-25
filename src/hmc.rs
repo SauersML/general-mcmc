@@ -209,8 +209,8 @@ where
     /// # Example
     ///
     /// ```rust
-    /// use mini_mcmc::hmc::HMC;
-    /// use mini_mcmc::distributions::DiffableGaussian2D;
+    /// use general_mcmc::hmc::HMC;
+    /// use general_mcmc::distributions::DiffableGaussian2D;
     /// use burn::backend::{Autodiff, NdArray};
     /// use burn::prelude::*;
     ///

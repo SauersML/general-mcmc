@@ -1,14 +1,14 @@
 [package]
-name = "mini-mcmc"
+name = "general-mcmc"
 version = "0.8.0"
-edition = "2021"
+edition = "2024"
 authors = ["Matteo Gätzner <matteo.gatzner@gmail.com>"]
-license = "Apache-2.0" 
+license = "Apache-2.0"
 description = "A compact Rust library for Markov Chain Monte Carlo (MCMC) methods with GPU support."
-repository = "https://github.com/MatteoGaetzner/mini-mcmc"
+repository = "https://github.com/SauersML/general-mcmc"
 readme = "README.md"
-documentation = "https://docs.rs/mini-mcmc"
-homepage = "https://github.com/MatteoGaetzner/mini-mcmc"
+documentation = "https://docs.rs/general-mcmc"
+homepage = "https://docs.rs/general-mcmc"
 
 exclude = [
   "target/*"

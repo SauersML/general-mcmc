@@ -746,7 +746,6 @@ where
                 &self.position,
                 &mom_0,
                 self.target.as_ref(),
-                &self.mass_matrix,
             );
         }
         self.mu = (V::Scalar::from_f64(10.0).unwrap() * self.epsilon).ln();
@@ -799,7 +798,7 @@ where
                     s_prime_2,
                     alpha_2,
                     n_alpha_2,
-                ) = build_tree(
+                ) = build_tree_with_mass(
                     position_minus.clone(),
                     mom_minus.clone(),
                     grad_minus.clone(),
@@ -835,7 +834,7 @@ where
                     s_prime_2,
                     alpha_2,
                     n_alpha_2,
-                ) = build_tree(
+                ) = build_tree_with_mass(
                     position_plus.clone(),
                     mom_plus.clone(),
                     grad_plus.clone(),
@@ -870,7 +869,7 @@ where
             n += n_prime;
 
             s = s_prime
-                && stop_criterion(
+                && stop_criterion_with_mass(
                     position_minus.clone(),
                     position_plus.clone(),
                     mom_minus.clone(),
@@ -913,7 +912,6 @@ where
                         &self.position,
                         &probe,
                         self.target.as_ref(),
-                        &self.mass_matrix,
                     );
                     self.mu = (V::Scalar::from_f64(10.0).unwrap() * self.epsilon).ln();
                     self.epsilon_bar = self.epsilon;
@@ -1008,7 +1006,23 @@ where
 }
 
 #[allow(dead_code)]
-fn find_reasonable_epsilon<V, Target>(
+pub(crate) fn find_reasonable_epsilon<V, Target>(
+    position: &V,
+    mom: &V,
+    gradient_target: &Target,
+) -> V::Scalar
+where
+    V: EuclideanVector,
+    V::Scalar: Float + FromPrimitive,
+    Target: HamiltonianTarget<V> + Sync,
+    StandardNormal: RandDistribution<V::Scalar>,
+    StandardUniform: RandDistribution<V::Scalar>,
+{
+    let mass_matrix = MassMatrix::identity(position.len());
+    find_reasonable_epsilon_with_mass(position, mom, gradient_target, &mass_matrix)
+}
+
+fn find_reasonable_epsilon_with_mass<V, Target>(
     position: &V,
     mom: &V,
     gradient_target: &Target,
@@ -1030,7 +1044,7 @@ where
     let mut position_prime = position.clone();
     let mut mom_prime = mom.clone();
     let mut grad_prime = grad.clone();
-    let mut ulogp_prime = leapfrog(
+    let mut ulogp_prime = leapfrog_with_mass(
         &mut position_prime,
         &mut mom_prime,
         &mut grad_prime,
@@ -1045,7 +1059,7 @@ where
         position_prime.assign(position);
         mom_prime.assign(mom);
         grad_prime.assign(&grad);
-        ulogp_prime = leapfrog(
+        ulogp_prime = leapfrog_with_mass(
             &mut position_prime,
             &mut mom_prime,
             &mut grad_prime,
@@ -1071,7 +1085,7 @@ where
         position_prime.assign(position);
         mom_prime.assign(mom);
         grad_prime.assign(&grad);
-        ulogp_prime = leapfrog(
+        ulogp_prime = leapfrog_with_mass(
             &mut position_prime,
             &mut mom_prime,
             &mut grad_prime,
@@ -1088,7 +1102,55 @@ where
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn build_tree<V, Target>(
+pub(crate) fn build_tree<V, Target>(
+    position: V,
+    mom: V,
+    grad: V,
+    logu: V::Scalar,
+    v: i8,
+    j: usize,
+    epsilon: V::Scalar,
+    gradient_target: &Target,
+    joint_0: V::Scalar,
+    rng: &mut SmallRng,
+) -> (
+    V,
+    V,
+    V,
+    V,
+    V,
+    V,
+    V,
+    V,
+    V::Scalar,
+    usize,
+    bool,
+    V::Scalar,
+    usize,
+)
+where
+    V: EuclideanVector,
+    V::Scalar: Float + FromPrimitive,
+    Target: HamiltonianTarget<V> + Sync,
+{
+    let mass_matrix = MassMatrix::identity(position.len());
+    build_tree_with_mass(
+        position,
+        mom,
+        grad,
+        logu,
+        v,
+        j,
+        epsilon,
+        gradient_target,
+        &mass_matrix,
+        joint_0,
+        rng,
+    )
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn build_tree_with_mass<V, Target>(
     position: V,
     mom: V,
     grad: V,
@@ -1124,7 +1186,7 @@ where
         let mut position_prime = position.clone();
         let mut mom_prime = mom.clone();
         let mut grad_prime = grad.clone();
-        let logp_prime = leapfrog(
+        let logp_prime = leapfrog_with_mass(
             &mut position_prime,
             &mut mom_prime,
             &mut grad_prime,
@@ -1173,7 +1235,7 @@ where
             mut s_prime,
             mut alpha_prime,
             mut n_alpha_prime,
-        ) = build_tree(
+        ) = build_tree_with_mass(
             position,
             mom,
             grad,
@@ -1202,7 +1264,7 @@ where
                 alpha_prime_2,
                 n_alpha_prime_2,
             ) = if v == -1 {
-                build_tree(
+                build_tree_with_mass(
                     position_minus.clone(),
                     mom_minus.clone(),
                     grad_minus.clone(),
@@ -1216,7 +1278,7 @@ where
                     rng,
                 )
             } else {
-                build_tree(
+                build_tree_with_mass(
                     position_plus.clone(),
                     mom_plus.clone(),
                     grad_plus.clone(),
@@ -1256,7 +1318,6 @@ where
                     position_plus.clone(),
                     mom_minus.clone(),
                     mom_plus.clone(),
-                    mass_matrix,
                 );
             alpha_prime = alpha_prime + alpha_prime_2;
             n_alpha_prime += n_alpha_prime_2;
@@ -1279,7 +1340,21 @@ where
     }
 }
 
-fn stop_criterion<V>(
+pub(crate) fn stop_criterion<V>(
+    position_minus: V,
+    position_plus: V,
+    mom_minus: V,
+    mom_plus: V,
+) -> bool
+where
+    V: EuclideanVector,
+    V::Scalar: Float + FromPrimitive,
+{
+    let mass_matrix = MassMatrix::identity(position_minus.len());
+    stop_criterion_with_mass(position_minus, position_plus, mom_minus, mom_plus, &mass_matrix)
+}
+
+fn stop_criterion_with_mass<V>(
     position_minus: V,
     position_plus: V,
     mom_minus: V,
@@ -1302,7 +1377,23 @@ where
     dot_minus >= V::Scalar::zero() && dot_plus >= V::Scalar::zero()
 }
 
-fn leapfrog<V, Target>(
+pub(crate) fn leapfrog<V, Target>(
+    position: &mut V,
+    momentum: &mut V,
+    grad: &mut V,
+    epsilon: V::Scalar,
+    gradient_target: &Target,
+) -> V::Scalar
+where
+    V: EuclideanVector,
+    V::Scalar: Float + FromPrimitive,
+    Target: HamiltonianTarget<V>,
+{
+    let mass_matrix = MassMatrix::identity(position.len());
+    leapfrog_with_mass(position, momentum, grad, epsilon, gradient_target, &mass_matrix)
+}
+
+fn leapfrog_with_mass<V, Target>(
     position: &mut V,
     momentum: &mut V,
     grad: &mut V,
@@ -1324,4 +1415,76 @@ where
     let logp = gradient_target.logp_and_grad(position, grad);
     momentum.add_scaled_assign(grad, epsilon * half);
     logp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        MassMatrix, MassMatrixAdaptation, MassMatrixWarmup, NUTSMassMatrixConfig,
+        maybe_update_mass_matrix,
+    };
+
+    #[test]
+    fn diagonal_mass_matrix_kinetic_and_inv_mul_are_consistent() {
+        let mass = MassMatrix::diagonal_from_var(vec![4.0_f64, 9.0_f64], 1e-12);
+        let p = [2.0_f64, 3.0_f64];
+        let ke = mass.kinetic(&p);
+        // 0.5 * (2^2/4 + 3^2/9) = 1.0
+        assert!((ke - 1.0).abs() < 1e-12);
+
+        let mut out = [0.0_f64; 2];
+        mass.inv_mul(&p, &mut out);
+        assert!((out[0] - 0.5).abs() < 1e-12);
+        assert!((out[1] - (1.0 / 3.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dense_mass_matrix_inverse_matches_identity_action() {
+        let cov = vec![
+            2.0_f64, 0.3_f64, //
+            0.3_f64, 1.0_f64,
+        ];
+        let mass = MassMatrix::dense_from_cov(cov, 2, 1e-12).expect("dense mass matrix");
+        let p = [0.7_f64, -1.1_f64];
+        let mut out = [0.0_f64; 2];
+        mass.inv_mul(&p, &mut out);
+
+        // For SPD matrix, p' M^{-1} p must be positive.
+        let quad = p[0] * out[0] + p[1] * out[1];
+        assert!(quad > 0.0);
+    }
+
+    #[test]
+    fn warmup_diagonal_update_produces_positive_variances() {
+        let cfg = NUTSMassMatrixConfig {
+            adaptation: MassMatrixAdaptation::Diagonal,
+            start_buffer: 1,
+            end_buffer: 1,
+            initial_window: 4,
+            regularize: 0.05,
+            jitter: 1e-6,
+            dense_max_dim: 75,
+        };
+        let mut warmup = MassMatrixWarmup::new(2, cfg, false);
+        let current = MassMatrix::identity(2);
+        for x in [
+            [-2.0_f64, 1.0_f64],
+            [-1.0, 0.0],
+            [0.0, 1.0],
+            [2.0, -1.0],
+            [1.0, 0.5],
+        ] {
+            warmup.running.update(&x);
+        }
+        let updated = maybe_update_mass_matrix(&current, &warmup).expect("updated mass");
+        match updated {
+            MassMatrix::Diagonal { inv, sqrt } => {
+                for i in 0..2 {
+                    assert!(inv[i].is_finite() && inv[i] > 0.0);
+                    assert!(sqrt[i].is_finite() && sqrt[i] > 0.0);
+                }
+            }
+            _ => panic!("expected diagonal mass matrix"),
+        }
+    }
 }

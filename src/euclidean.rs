@@ -50,6 +50,9 @@ pub trait EuclideanVector: Clone {
 
     /// Writes the vector contents into the provided slice.
     fn write_to_slice(&self, out: &mut [Self::Scalar]);
+
+    /// Overwrites vector contents from the provided slice.
+    fn read_from_slice(&mut self, input: &[Self::Scalar]);
 }
 
 impl<T> EuclideanVector for ndarray::Array1<T>
@@ -98,7 +101,7 @@ where
     }
 
     fn dot(&self, other: &Self) -> Self::Scalar {
-        self.dot(other)
+        self.view().dot(&other.view())
     }
 
     fn fill_standard_normal(&mut self, rng: &mut impl Rng)
@@ -119,6 +122,18 @@ where
             .as_slice()
             .expect("Array1 is expected to be contiguous when writing to slice");
         out.copy_from_slice(slice);
+    }
+
+    fn read_from_slice(&mut self, input: &[Self::Scalar]) {
+        assert_eq!(
+            input.len(),
+            self.len(),
+            "read_from_slice called with mismatched buffer length"
+        );
+        let slice = self
+            .as_slice_mut()
+            .expect("Array1 is expected to be contiguous when reading from slice");
+        slice.copy_from_slice(input);
     }
 }
 
@@ -326,6 +341,17 @@ mod burn_impl {
             );
             out.copy_from_slice(slice);
         }
+
+        fn read_from_slice(&mut self, input: &[Self::Scalar]) {
+            assert_eq!(
+                input.len(),
+                self.len(),
+                "read_from_slice called with mismatched buffer length"
+            );
+            let td = burn::tensor::TensorData::new(input.to_vec(), [self.len()]);
+            let updated = Tensor::<B, 1>::from_data(td, &B::Device::default());
+            self.inplace(|_| updated);
+        }
     }
 
     // Batched chains: Tensor<B, 2> of shape [n_chains, dim]
@@ -399,6 +425,19 @@ mod burn_impl {
                 "write_to_slice called with mismatched buffer length"
             );
             out.copy_from_slice(slice);
+        }
+
+        fn read_from_slice(&mut self, input: &[Self::Scalar]) {
+            let dims = self.dims();
+            let expected = dims[0] * dims[1];
+            assert_eq!(
+                input.len(),
+                expected,
+                "read_from_slice called with mismatched buffer length"
+            );
+            let td = burn::tensor::TensorData::new(input.to_vec(), dims);
+            let updated = Tensor::<B, 2>::from_data(td, &B::Device::default());
+            self.inplace(|_| updated);
         }
     }
 

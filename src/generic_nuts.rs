@@ -30,6 +30,334 @@ where
 
 type RunResult<T> = Result<(Array3<T>, RunStats), Box<dyn Error>>;
 
+/// Mass-matrix adaptation strategy for warmup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MassMatrixAdaptation {
+    None,
+    Diagonal,
+    Dense,
+}
+
+/// Controls warmup-time mass-matrix adaptation for NUTS.
+#[derive(Clone, Debug)]
+pub struct NUTSMassMatrixConfig {
+    pub adaptation: MassMatrixAdaptation,
+    pub start_buffer: usize,
+    pub end_buffer: usize,
+    pub initial_window: usize,
+    pub regularize: f64,
+    pub jitter: f64,
+    pub dense_max_dim: usize,
+}
+
+impl NUTSMassMatrixConfig {
+    pub fn disabled() -> Self {
+        Self {
+            adaptation: MassMatrixAdaptation::None,
+            start_buffer: 0,
+            end_buffer: 0,
+            initial_window: 0,
+            regularize: 0.0,
+            jitter: 0.0,
+            dense_max_dim: 0,
+        }
+    }
+}
+
+impl Default for NUTSMassMatrixConfig {
+    fn default() -> Self {
+        Self {
+            adaptation: MassMatrixAdaptation::Diagonal,
+            start_buffer: 75,
+            end_buffer: 50,
+            initial_window: 25,
+            regularize: 0.05,
+            jitter: 1e-6,
+            dense_max_dim: 75,
+        }
+    }
+}
+
+struct RunningCov<S: Float> {
+    dim: usize,
+    n: usize,
+    mean: Vec<S>,
+    m2_diag: Vec<S>,
+    m2_dense: Option<Vec<S>>,
+}
+
+impl<S: Float + FromPrimitive> RunningCov<S> {
+    fn new(dim: usize, dense: bool) -> Self {
+        Self {
+            dim,
+            n: 0,
+            mean: vec![S::zero(); dim],
+            m2_diag: vec![S::zero(); dim],
+            m2_dense: dense.then(|| vec![S::zero(); dim * dim]),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.n = 0;
+        self.mean.fill(S::zero());
+        self.m2_diag.fill(S::zero());
+        if let Some(m2) = self.m2_dense.as_mut() {
+            m2.fill(S::zero());
+        }
+    }
+
+    fn update(&mut self, x: &[S]) {
+        self.n += 1;
+        let n_s = S::from_usize(self.n).unwrap();
+        let mut delta = vec![S::zero(); self.dim];
+        for i in 0..self.dim {
+            delta[i] = x[i] - self.mean[i];
+            self.mean[i] = self.mean[i] + delta[i] / n_s;
+            let delta2 = x[i] - self.mean[i];
+            self.m2_diag[i] = self.m2_diag[i] + delta[i] * delta2;
+        }
+        if let Some(m2) = self.m2_dense.as_mut() {
+            let mut delta2 = vec![S::zero(); self.dim];
+            for i in 0..self.dim {
+                delta2[i] = x[i] - self.mean[i];
+            }
+            for i in 0..self.dim {
+                for j in i..self.dim {
+                    let idx = i * self.dim + j;
+                    m2[idx] = m2[idx] + delta[i] * delta2[j];
+                }
+            }
+        }
+    }
+}
+
+struct MassMatrixWarmup<S: Float> {
+    config: NUTSMassMatrixConfig,
+    next_window_end: usize,
+    window_len: usize,
+    running: RunningCov<S>,
+}
+
+impl<S: Float + FromPrimitive> MassMatrixWarmup<S> {
+    fn new(dim: usize, config: NUTSMassMatrixConfig, dense: bool) -> Self {
+        let start_buffer = config.start_buffer.max(1);
+        let window_len = config.initial_window.max(10);
+        Self {
+            config,
+            next_window_end: start_buffer + window_len,
+            window_len,
+            running: RunningCov::new(dim, dense),
+        }
+    }
+
+    fn should_collect(&self, m: usize, n_warmup: usize) -> bool {
+        if m == 0 || m > n_warmup {
+            return false;
+        }
+        if m <= self.config.start_buffer {
+            return false;
+        }
+        m < n_warmup.saturating_sub(self.config.end_buffer)
+    }
+
+    fn note_if_window_end(&mut self, m: usize, n_warmup: usize) -> bool {
+        if !self.should_collect(m, n_warmup) {
+            return false;
+        }
+        if m >= self.next_window_end || m + 1 >= n_warmup.saturating_sub(self.config.end_buffer) {
+            self.next_window_end = self.next_window_end.saturating_add(self.window_len);
+            self.window_len = (self.window_len.saturating_mul(2)).min(400);
+            return true;
+        }
+        false
+    }
+}
+
+#[derive(Clone)]
+enum MassMatrix<S: Float> {
+    Identity {
+        dim: usize,
+    },
+    Diagonal {
+        inv: Vec<S>,
+        sqrt: Vec<S>,
+    },
+    Dense {
+        dim: usize,
+        inv: Vec<S>,
+        chol: Vec<S>,
+    },
+}
+
+impl<S: Float + FromPrimitive> MassMatrix<S> {
+    fn identity(dim: usize) -> Self {
+        Self::Identity { dim }
+    }
+
+    fn diagonal_from_var(mut var: Vec<S>, jitter: S) -> Self {
+        let mut inv = vec![S::zero(); var.len()];
+        let mut sqrt = vec![S::zero(); var.len()];
+        for i in 0..var.len() {
+            let v = var[i].max(jitter);
+            var[i] = v;
+            inv[i] = S::one() / v;
+            sqrt[i] = v.sqrt();
+        }
+        Self::Diagonal { inv, sqrt }
+    }
+
+    fn dense_from_cov(cov: Vec<S>, dim: usize, jitter: S) -> Option<Self> {
+        let max_tries = 8usize;
+        let mut j = jitter.max(S::from_f64(1e-10).unwrap());
+        for _ in 0..max_tries {
+            let mut cov_try = cov.clone();
+            for d in 0..dim {
+                cov_try[d * dim + d] = cov_try[d * dim + d] + j;
+            }
+            if let Some(chol) = cholesky_spd(&cov_try, dim)
+                && let Some(inv) = invert_spd_from_cholesky(&chol, dim)
+            {
+                return Some(Self::Dense { dim, inv, chol });
+            }
+            j = j * S::from_f64(10.0).unwrap();
+        }
+        None
+    }
+
+    fn kinetic(&self, momentum: &[S]) -> S {
+        let half = S::from_f64(0.5).unwrap();
+        match self {
+            Self::Identity { .. } => {
+                let mut q = S::zero();
+                for v in momentum {
+                    q = q + *v * *v;
+                }
+                half * q
+            }
+            Self::Diagonal { inv, .. } => {
+                let mut q = S::zero();
+                for i in 0..momentum.len() {
+                    q = q + momentum[i] * momentum[i] * inv[i];
+                }
+                half * q
+            }
+            Self::Dense { inv, dim, .. } => {
+                let mut q = S::zero();
+                for i in 0..*dim {
+                    let mut row_dot = S::zero();
+                    for j in 0..*dim {
+                        row_dot = row_dot + inv[i * *dim + j] * momentum[j];
+                    }
+                    q = q + momentum[i] * row_dot;
+                }
+                half * q
+            }
+        }
+    }
+
+    fn inv_mul(&self, input: &[S], out: &mut [S]) {
+        match self {
+            Self::Identity { .. } => out.copy_from_slice(input),
+            Self::Diagonal { inv, .. } => {
+                for i in 0..input.len() {
+                    out[i] = inv[i] * input[i];
+                }
+            }
+            Self::Dense { inv, dim, .. } => {
+                for i in 0..*dim {
+                    let mut acc = S::zero();
+                    for j in 0..*dim {
+                        acc = acc + inv[i * *dim + j] * input[j];
+                    }
+                    out[i] = acc;
+                }
+            }
+        }
+    }
+
+    fn sample_momentum(&self, rng: &mut SmallRng, out: &mut [S])
+    where
+        StandardNormal: RandDistribution<S>,
+    {
+        for v in out.iter_mut() {
+            *v = rng.sample(StandardNormal);
+        }
+        match self {
+            Self::Identity { .. } => {}
+            Self::Diagonal { sqrt, .. } => {
+                for i in 0..out.len() {
+                    out[i] = out[i] * sqrt[i];
+                }
+            }
+            Self::Dense { chol, dim, .. } => {
+                let z = out.to_vec();
+                for i in 0..*dim {
+                    let mut acc = S::zero();
+                    for j in 0..=i {
+                        acc = acc + chol[i * *dim + j] * z[j];
+                    }
+                    out[i] = acc;
+                }
+            }
+        }
+    }
+}
+
+fn cholesky_spd<S: Float + FromPrimitive>(a: &[S], dim: usize) -> Option<Vec<S>> {
+    let mut l = vec![S::zero(); dim * dim];
+    for i in 0..dim {
+        for j in 0..=i {
+            let mut sum = a[i * dim + j];
+            for k in 0..j {
+                sum = sum - l[i * dim + k] * l[j * dim + k];
+            }
+            if i == j {
+                if sum <= S::zero() || !sum.is_finite() {
+                    return None;
+                }
+                l[i * dim + j] = sum.sqrt();
+            } else {
+                let d = l[j * dim + j];
+                if d <= S::zero() || !d.is_finite() {
+                    return None;
+                }
+                l[i * dim + j] = sum / d;
+            }
+        }
+    }
+    Some(l)
+}
+
+fn invert_spd_from_cholesky<S: Float + FromPrimitive>(l: &[S], dim: usize) -> Option<Vec<S>> {
+    let mut inv_l = vec![S::zero(); dim * dim];
+    for i in 0..dim {
+        let d = l[i * dim + i];
+        if d <= S::zero() || !d.is_finite() {
+            return None;
+        }
+        inv_l[i * dim + i] = S::one() / d;
+        for j in (i + 1)..dim {
+            let mut sum = S::zero();
+            for k in i..j {
+                sum = sum + l[j * dim + k] * inv_l[k * dim + i];
+            }
+            inv_l[j * dim + i] = -sum / l[j * dim + j];
+        }
+    }
+    let mut inv = vec![S::zero(); dim * dim];
+    for i in 0..dim {
+        for j in 0..=i {
+            let mut sum = S::zero();
+            for k in i.max(j)..dim {
+                sum = sum + inv_l[k * dim + i] * inv_l[k * dim + j];
+            }
+            inv[i * dim + j] = sum;
+            inv[j * dim + i] = sum;
+        }
+    }
+    Some(inv)
+}
+
 impl<V, Target> GenericNUTS<V, Target>
 where
     V: EuclideanVector + Send,
@@ -40,10 +368,31 @@ where
     Exp1: RandDistribution<V::Scalar>,
 {
     pub fn new(target: Target, initial_positions: Vec<V>, target_accept_p: V::Scalar) -> Self {
+        Self::new_with_mass_matrix(
+            target,
+            initial_positions,
+            target_accept_p,
+            NUTSMassMatrixConfig::disabled(),
+        )
+    }
+
+    pub fn new_with_mass_matrix(
+        target: Target,
+        initial_positions: Vec<V>,
+        target_accept_p: V::Scalar,
+        mass_config: NUTSMassMatrixConfig,
+    ) -> Self {
         let target = Arc::new(target);
         let chains = initial_positions
             .into_iter()
-            .map(|pos| GenericNUTSChain::new_shared(Arc::clone(&target), pos, target_accept_p))
+            .map(|pos| {
+                GenericNUTSChain::new_shared(
+                    Arc::clone(&target),
+                    pos,
+                    target_accept_p,
+                    mass_config.clone(),
+                )
+            })
             .collect();
         Self { chains }
     }
@@ -208,7 +557,6 @@ where
 }
 
 /// Single-chain state and adaptation for NUTS.
-#[derive(Debug)]
 pub struct GenericNUTSChain<V, Target>
 where
     V: EuclideanVector,
@@ -227,6 +575,8 @@ where
     mu: V::Scalar,
     epsilon_bar: V::Scalar,
     h_bar: V::Scalar,
+    mass_matrix: MassMatrix<V::Scalar>,
+    mass_warmup: Option<MassMatrixWarmup<V::Scalar>>,
     rng: SmallRng,
 }
 
@@ -241,17 +591,41 @@ where
 {
     pub fn new(target: Target, initial_position: V, target_accept_p: V::Scalar) -> Self {
         let target = Arc::new(target);
-        Self::new_shared(target, initial_position, target_accept_p)
+        Self::new_shared(
+            target,
+            initial_position,
+            target_accept_p,
+            NUTSMassMatrixConfig::disabled(),
+        )
     }
 
     pub(crate) fn new_shared(
         target: Arc<Target>,
         initial_position: V,
         target_accept_p: V::Scalar,
+        mass_config: NUTSMassMatrixConfig,
     ) -> Self {
         let mut thread_rng = rand::rng();
         let rng = SmallRng::from_rng(&mut thread_rng);
         let epsilon = -V::Scalar::one();
+        let dim = initial_position.len();
+        let adaptation = if mass_config.adaptation == MassMatrixAdaptation::Dense
+            && dim > mass_config.dense_max_dim
+        {
+            MassMatrixAdaptation::Diagonal
+        } else {
+            mass_config.adaptation
+        };
+        let mass_matrix = MassMatrix::identity(dim);
+        let mass_warmup = match adaptation {
+            MassMatrixAdaptation::None => None,
+            MassMatrixAdaptation::Diagonal => {
+                Some(MassMatrixWarmup::new(dim, mass_config.clone(), false))
+            }
+            MassMatrixAdaptation::Dense => {
+                Some(MassMatrixWarmup::new(dim, mass_config.clone(), true))
+            }
+        };
 
         Self {
             target,
@@ -267,6 +641,8 @@ where
             mu: (V::Scalar::from_f64(10.0).unwrap() * V::Scalar::one()).ln(),
             epsilon_bar: V::Scalar::one(),
             h_bar: V::Scalar::zero(),
+            mass_matrix,
+            mass_warmup,
             rng,
         }
     }
@@ -356,11 +732,22 @@ where
         let dim = self.position.len();
         self.n_collect = n_collect;
         self.n_discard = n_discard;
+        self.m = 0;
 
         let mut mom_0 = self.position.zeros_like();
-        mom_0.fill_standard_normal(&mut self.rng);
+        let mut mom_buf = vec![V::Scalar::zero(); dim];
+        self.mass_matrix.sample_momentum(&mut self.rng, &mut mom_buf);
+        mom_0.read_from_slice(&mom_buf);
+        if let Some(warmup) = self.mass_warmup.as_mut() {
+            warmup.running.reset();
+        }
         if V::Scalar::abs(self.epsilon + V::Scalar::one()) <= V::Scalar::epsilon() {
-            self.epsilon = find_reasonable_epsilon(&self.position, &mom_0, self.target.as_ref());
+            self.epsilon = find_reasonable_epsilon(
+                &self.position,
+                &mom_0,
+                self.target.as_ref(),
+                &self.mass_matrix,
+            );
         }
         self.mu = (V::Scalar::from_f64(10.0).unwrap() * self.epsilon).ln();
         dim
@@ -369,12 +756,15 @@ where
     pub fn step(&mut self) {
         self.m += 1;
 
+        let dim = self.position.len();
         let mut mom_0 = self.position.zeros_like();
-        mom_0.fill_standard_normal(&mut self.rng);
+        let mut mom_buf = vec![V::Scalar::zero(); dim];
+        self.mass_matrix.sample_momentum(&mut self.rng, &mut mom_buf);
+        mom_0.read_from_slice(&mom_buf);
 
         let mut grad = self.position.zeros_like();
         let logp = self.target.logp_and_grad(&self.position, &mut grad);
-        let joint = logp - mom_0.dot(&mom_0) * V::Scalar::from_f64(0.5).unwrap();
+        let joint = logp - kinetic_energy(&self.mass_matrix, &mom_0);
         let exp1_obs: V::Scalar = self.rng.sample(Exp1);
         let logu = joint - exp1_obs;
 
@@ -418,6 +808,7 @@ where
                     j,
                     self.epsilon,
                     self.target.as_ref(),
+                    &self.mass_matrix,
                     joint,
                     &mut self.rng,
                 );
@@ -453,6 +844,7 @@ where
                     j,
                     self.epsilon,
                     self.target.as_ref(),
+                    &self.mass_matrix,
                     joint,
                     &mut self.rng,
                 );
@@ -483,6 +875,7 @@ where
                     position_plus.clone(),
                     mom_minus.clone(),
                     mom_plus.clone(),
+                    &self.mass_matrix,
                 );
             j += 1
         }
@@ -501,8 +894,106 @@ where
             eta = m.powf(-self.kappa);
             self.epsilon_bar =
                 ((V::Scalar::one() - eta) * self.epsilon_bar.ln() + eta * self.epsilon.ln()).exp();
+
+            if let Some(warmup) = self.mass_warmup.as_mut()
+                && warmup.should_collect(self.m, self.n_discard)
+            {
+                let mut q = vec![V::Scalar::zero(); dim];
+                self.position.write_to_slice(&mut q);
+                warmup.running.update(&q);
+                if warmup.note_if_window_end(self.m, self.n_discard)
+                    && let Some(updated) = maybe_update_mass_matrix(&self.mass_matrix, warmup)
+                {
+                    self.mass_matrix = updated;
+                    let mut probe = self.position.zeros_like();
+                    let mut probe_buf = vec![V::Scalar::zero(); dim];
+                    self.mass_matrix.sample_momentum(&mut self.rng, &mut probe_buf);
+                    probe.read_from_slice(&probe_buf);
+                    self.epsilon = find_reasonable_epsilon(
+                        &self.position,
+                        &probe,
+                        self.target.as_ref(),
+                        &self.mass_matrix,
+                    );
+                    self.mu = (V::Scalar::from_f64(10.0).unwrap() * self.epsilon).ln();
+                    self.epsilon_bar = self.epsilon;
+                    self.h_bar = V::Scalar::zero();
+                    warmup.running.reset();
+                }
+            }
         } else {
             self.epsilon = self.epsilon_bar;
+        }
+    }
+}
+
+fn kinetic_energy<V: EuclideanVector>(mass: &MassMatrix<V::Scalar>, mom: &V) -> V::Scalar
+where
+    V::Scalar: Float + FromPrimitive,
+{
+    let mut p = vec![V::Scalar::zero(); mom.len()];
+    mom.write_to_slice(&mut p);
+    mass.kinetic(&p)
+}
+
+fn apply_inv_mass<V: EuclideanVector>(mass: &MassMatrix<V::Scalar>, input: &V, out: &mut V)
+where
+    V::Scalar: Float + FromPrimitive,
+{
+    let mut p = vec![V::Scalar::zero(); input.len()];
+    let mut v = vec![V::Scalar::zero(); input.len()];
+    input.write_to_slice(&mut p);
+    mass.inv_mul(&p, &mut v);
+    out.read_from_slice(&v);
+}
+
+fn maybe_update_mass_matrix<S: Float + FromPrimitive>(
+    current: &MassMatrix<S>,
+    warmup: &MassMatrixWarmup<S>,
+) -> Option<MassMatrix<S>> {
+    let n = warmup.running.n;
+    if n < 5 {
+        return None;
+    }
+    let n_denom = S::from_usize(n - 1).unwrap();
+    let reg = S::from_f64(warmup.config.regularize).unwrap();
+    let one_minus_reg = S::one() - reg;
+    let jitter = S::from_f64(warmup.config.jitter.max(1e-10)).unwrap();
+    match warmup.config.adaptation {
+        MassMatrixAdaptation::None => None,
+        MassMatrixAdaptation::Diagonal => {
+            let mut var = vec![S::zero(); warmup.running.dim];
+            for (i, vi) in var.iter_mut().enumerate().take(warmup.running.dim) {
+                let raw = warmup.running.m2_diag[i] / n_denom;
+                *vi = (one_minus_reg * raw + reg).max(jitter);
+            }
+            Some(MassMatrix::diagonal_from_var(var, jitter))
+        }
+        MassMatrixAdaptation::Dense => {
+            let dim = warmup.running.dim;
+            let Some(m2_dense) = warmup.running.m2_dense.as_ref() else {
+                return None;
+            };
+            let mut cov = vec![S::zero(); dim * dim];
+            for i in 0..dim {
+                for j in i..dim {
+                    let idx = i * dim + j;
+                    let raw = m2_dense[idx] / n_denom;
+                    let v = if i == j {
+                        (one_minus_reg * raw + reg).max(jitter)
+                    } else {
+                        one_minus_reg * raw
+                    };
+                    cov[idx] = v;
+                    cov[j * dim + i] = v;
+                }
+            }
+            MassMatrix::dense_from_cov(cov, dim, jitter).or_else(|| match current {
+                MassMatrix::Diagonal { .. } | MassMatrix::Dense { .. } => None,
+                MassMatrix::Identity { dim } => {
+                    Some(MassMatrix::diagonal_from_var(vec![S::one(); *dim], jitter))
+                }
+            })
         }
     }
 }
@@ -517,10 +1008,11 @@ where
 }
 
 #[allow(dead_code)]
-pub(crate) fn find_reasonable_epsilon<V, Target>(
+fn find_reasonable_epsilon<V, Target>(
     position: &V,
     mom: &V,
     gradient_target: &Target,
+    mass_matrix: &MassMatrix<V::Scalar>,
 ) -> V::Scalar
 where
     V: EuclideanVector,
@@ -544,6 +1036,7 @@ where
         &mut grad_prime,
         epsilon,
         gradient_target,
+        mass_matrix,
     );
     let mut k = V::Scalar::one();
 
@@ -558,11 +1051,13 @@ where
             &mut grad_prime,
             epsilon * k,
             gradient_target,
+            mass_matrix,
         );
     }
 
     epsilon = half * k * epsilon;
-    let log_accept_prob = ulogp_prime - ulogp - (mom_prime.dot(&mom_prime) - mom.dot(mom)) * half;
+    let log_accept_prob =
+        ulogp_prime - ulogp - (kinetic_energy(mass_matrix, &mom_prime) - kinetic_energy(mass_matrix, mom));
     let mut log_accept_prob = log_accept_prob;
 
     let a = if log_accept_prob > half.ln() {
@@ -582,15 +1077,18 @@ where
             &mut grad_prime,
             epsilon,
             gradient_target,
+            mass_matrix,
         );
-        log_accept_prob = ulogp_prime - ulogp - (mom_prime.dot(&mom_prime) - mom.dot(mom)) * half;
+        log_accept_prob = ulogp_prime
+            - ulogp
+            - (kinetic_energy(mass_matrix, &mom_prime) - kinetic_energy(mass_matrix, mom));
     }
 
     epsilon
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-pub(crate) fn build_tree<V, Target>(
+fn build_tree<V, Target>(
     position: V,
     mom: V,
     grad: V,
@@ -599,6 +1097,7 @@ pub(crate) fn build_tree<V, Target>(
     j: usize,
     epsilon: V::Scalar,
     gradient_target: &Target,
+    mass_matrix: &MassMatrix<V::Scalar>,
     joint_0: V::Scalar,
     rng: &mut SmallRng,
 ) -> (
@@ -631,8 +1130,9 @@ where
             &mut grad_prime,
             V::Scalar::from_i64(v as i64).unwrap() * epsilon,
             gradient_target,
+            mass_matrix,
         );
-        let joint = logp_prime - mom_prime.dot(&mom_prime) * V::Scalar::from_f64(0.5).unwrap();
+        let joint = logp_prime - kinetic_energy(mass_matrix, &mom_prime);
         let n_prime = (logu < joint) as usize;
         let s_prime = (logu - V::Scalar::from_f64(1000.0).unwrap()) < joint;
         let position_minus = position_prime.clone();
@@ -682,6 +1182,7 @@ where
             j - 1,
             epsilon,
             gradient_target,
+            mass_matrix,
             joint_0,
             rng,
         );
@@ -710,6 +1211,7 @@ where
                     j - 1,
                     epsilon,
                     gradient_target,
+                    mass_matrix,
                     joint_0,
                     rng,
                 )
@@ -723,6 +1225,7 @@ where
                     j - 1,
                     epsilon,
                     gradient_target,
+                    mass_matrix,
                     joint_0,
                     rng,
                 )
@@ -753,6 +1256,7 @@ where
                     position_plus.clone(),
                     mom_minus.clone(),
                     mom_plus.clone(),
+                    mass_matrix,
                 );
             alpha_prime = alpha_prime + alpha_prime_2;
             n_alpha_prime += n_alpha_prime_2;
@@ -775,30 +1279,36 @@ where
     }
 }
 
-pub(crate) fn stop_criterion<V>(
+fn stop_criterion<V>(
     position_minus: V,
     position_plus: V,
     mom_minus: V,
     mom_plus: V,
+    mass_matrix: &MassMatrix<V::Scalar>,
 ) -> bool
 where
     V: EuclideanVector,
-    V::Scalar: Float,
+    V::Scalar: Float + FromPrimitive,
 {
     // Use proper subtraction to match original Tensor semantics
     let mut diff = position_plus.clone();
     diff.sub_assign(&position_minus);
-    let dot_minus = diff.dot(&mom_minus);
-    let dot_plus = diff.dot(&mom_plus);
+    let mut vel_minus = mom_minus.zeros_like();
+    let mut vel_plus = mom_plus.zeros_like();
+    apply_inv_mass(mass_matrix, &mom_minus, &mut vel_minus);
+    apply_inv_mass(mass_matrix, &mom_plus, &mut vel_plus);
+    let dot_minus = diff.dot(&vel_minus);
+    let dot_plus = diff.dot(&vel_plus);
     dot_minus >= V::Scalar::zero() && dot_plus >= V::Scalar::zero()
 }
 
-pub(crate) fn leapfrog<V, Target>(
+fn leapfrog<V, Target>(
     position: &mut V,
     momentum: &mut V,
     grad: &mut V,
     epsilon: V::Scalar,
     gradient_target: &Target,
+    mass_matrix: &MassMatrix<V::Scalar>,
 ) -> V::Scalar
 where
     V: EuclideanVector,
@@ -808,7 +1318,9 @@ where
     // Match original operation order: grad * epsilon * 0.5 (not grad * (0.5 * epsilon))
     let half = V::Scalar::from_f64(0.5).unwrap();
     momentum.add_scaled_assign(grad, epsilon * half);
-    position.add_scaled_assign(momentum, epsilon);
+    let mut velocity = momentum.zeros_like();
+    apply_inv_mass(mass_matrix, momentum, &mut velocity);
+    position.add_scaled_assign(&velocity, epsilon);
     let logp = gradient_target.logp_and_grad(position, grad);
     momentum.add_scaled_assign(grad, epsilon * half);
     logp

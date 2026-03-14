@@ -207,7 +207,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{init_det, ChainRunner};
+    use crate::core::{ChainRunner, init_det};
     use approx::assert_abs_diff_eq;
     use ndarray::{Array3, Axis};
     use rand_distr::StandardNormal;

@@ -39,17 +39,13 @@ use crate::generic_hmc::HamiltonianTarget;
 use crate::generic_nuts::{GenericNUTS, GenericNUTSChain};
 use crate::stats::RunStats;
 use burn::prelude::*;
-use burn::tensor::backend::AutodiffBackend;
 #[cfg(test)]
 use burn::tensor::Tensor;
+use burn::tensor::backend::AutodiffBackend;
 use burn::tensor::{Element, ElementConversion};
 use num_traits::{Float, FromPrimitive};
 use rand::distr::Distribution as RandDistribution;
 // Bind to rand's Distribution to avoid mismatches from transitive rand 0.8 deps.
-#[cfg(test)]
-use rand::rngs::SmallRng;
-#[cfg(test)]
-use rand::SeedableRng;
 use rand_distr::uniform::SampleUniform;
 use rand_distr::{Exp1, StandardNormal, StandardUniform};
 use std::error::Error;
@@ -462,7 +458,7 @@ mod tests {
         core::init,
         dev_tools::Timer,
         distributions::{DiffableGaussian2D, Rosenbrock2D},
-        generic_nuts::{build_tree, find_reasonable_epsilon},
+        generic_nuts::find_reasonable_epsilon,
         stats::split_rhat_mean_ess,
     };
 
@@ -516,73 +512,6 @@ mod tests {
         let mom = Tensor::<BackendType, 1>::from([1.0, 0.0]);
         let epsilon: f64 = find_reasonable_epsilon(&position, &mom, &target);
         assert_eq!(epsilon, 2.0);
-    }
-
-    #[test]
-    fn test_build_tree() {
-        // Use BurnGradientTarget to wrap DiffableGaussian2D for the generic function
-        let gradient_target = BurnGradientTarget {
-            inner: DiffableGaussian2D::new([0.0_f64, 1.0], [[4.0, 2.0], [2.0, 3.0]]),
-            _marker: PhantomData::<f64>,
-        };
-        let position = Tensor::<BackendType, 1>::from([0.0, 1.0]);
-        let mom = Tensor::<BackendType, 1>::from([2.0, 3.0]);
-        let grad = Tensor::<BackendType, 1>::from([4.0, 5.0]);
-        let logu = -2.0;
-        let v: i8 = -1;
-        let j: usize = 3;
-        let epsilon: f64 = 0.01;
-        let joint_0 = 0.1_f64;
-        let mut rng = SmallRng::seed_from_u64(0);
-        let (
-            position_minus,
-            mom_minus,
-            grad_minus,
-            position_plus,
-            mom_plus,
-            grad_plus,
-            position_prime,
-            grad_prime,
-            logp_prime,
-            n_prime,
-            s_prime,
-            alpha_prime,
-            n_alpha_prime,
-        ) = build_tree(
-            position,
-            mom,
-            grad,
-            logu,
-            v,
-            j,
-            epsilon,
-            &gradient_target,
-            joint_0,
-            &mut rng,
-        );
-        let tol = Tolerance::<f64>::default()
-            .set_relative(1e-5)
-            .set_absolute(1e-6);
-
-        assert_tensor_approx_eq(position_minus, &[-0.1584001, 0.76208336], tol);
-        assert_tensor_approx_eq(mom_minus, &[1.980_003_6, 2.971_825_3], tol);
-        assert_tensor_approx_eq(grad_minus, &[-7.912_36e-5, 7.935_829_5e-2], tol);
-
-        assert_tensor_approx_eq(position_plus, &[-0.0198, 0.97025], tol);
-        assert_tensor_approx_eq(mom_plus, &[1.98, 2.974_950_3], tol);
-        assert_tensor_approx_eq(grad_plus, &[-1.250e-05, 9.925e-03], tol);
-
-        assert_tensor_approx_eq(position_prime, &[-0.0198, 0.97025], tol);
-        assert_tensor_approx_eq(grad_prime, &[-1.250e-05, 9.925e-03], tol);
-
-        assert_eq!(n_prime, 0);
-        assert!(s_prime);
-        assert_eq!(n_alpha_prime, 8);
-
-        let logp_exp = -2.877_745_4_f64;
-        let alpha_exp = 0.000_686_661_7_f64;
-        assert!((logp_prime - logp_exp).abs() < 1e-6, "logp mismatch");
-        assert!((alpha_prime - alpha_exp).abs() < 1e-8, "alpha mismatch");
     }
 
     #[test]
@@ -721,8 +650,14 @@ mod tests {
         let data = sample.to_data();
         let array = ArrayView3::from_shape(sample.dims(), data.as_slice::<f64>().unwrap()).unwrap();
         let (split_rhat, ess) = split_rhat_mean_ess(array);
-        println!("AVG Split Rhat: {}", split_rhat.mean().unwrap());
-        println!("AVG ESS: {}", ess.mean().unwrap());
+        println!(
+            "MAX Split Rhat: {}",
+            split_rhat.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+        );
+        println!(
+            "MIN ESS: {}",
+            ess.iter().copied().fold(f64::INFINITY, f64::min)
+        );
 
         #[cfg(feature = "csv")]
         save_csv_tensor(sample, "/tmp/nuts-sample.csv").expect("saving data should succeed")
@@ -753,8 +688,8 @@ mod tests {
         let data = sample.to_data();
         let array = ArrayView3::from_shape(sample.dims(), data.as_slice::<f64>().unwrap()).unwrap();
         let (split_rhat, ess) = split_rhat_mean_ess(array);
-        let min_rhat = split_rhat.iter().cloned().fold(f32::INFINITY, f32::min);
-        let min_ess = ess.iter().cloned().fold(f32::INFINITY, f32::min);
+        let min_rhat = split_rhat.iter().cloned().fold(f64::INFINITY, f64::min);
+        let min_ess = ess.iter().cloned().fold(f64::INFINITY, f64::min);
         println!("MIN Split Rhat: {}", min_rhat);
         println!("MIN ESS: {}", min_ess);
 

@@ -149,7 +149,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use burn::backend::{ndarray::NdArrayDevice, NdArray};
+    use burn::backend::{NdArray, ndarray::NdArrayDevice};
     use csv::Reader;
     use ndarray::arr3;
     use std::fs;

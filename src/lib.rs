@@ -228,6 +228,7 @@
 pub mod batched_hmc;
 pub mod core;
 mod dev_tools;
+mod diag_mass;
 pub mod distributions;
 pub mod euclidean;
 pub mod generic_hmc;

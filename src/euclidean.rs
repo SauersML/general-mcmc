@@ -40,8 +40,17 @@ pub trait EuclideanVector: Clone {
     /// Scales the vector in-place.
     fn scale_assign(&mut self, alpha: Self::Scalar);
 
+    /// Multiplies each dimension by the corresponding diagonal element.
+    fn scale_diag_assign(&mut self, diag: &[Self::Scalar]);
+
+    /// In-place fused multiply-add with a diagonal metric: `self += alpha * diag .* other`.
+    fn add_diag_scaled_assign(&mut self, other: &Self, diag: &[Self::Scalar], alpha: Self::Scalar);
+
     /// Dot product between two vectors.
     fn dot(&self, other: &Self) -> Self::Scalar;
+
+    /// Diagonal quadratic form `sum_i diag[i] * self[i]^2`.
+    fn quad_form_diag(&self, diag: &[Self::Scalar]) -> Self::Scalar;
 
     /// Fills the vector with samples from N(0, 1) in-place.
     fn fill_standard_normal(&mut self, rng: &mut impl Rng)
@@ -100,8 +109,40 @@ where
         self.mapv_inplace(|x| x * alpha);
     }
 
+    fn scale_diag_assign(&mut self, diag: &[Self::Scalar]) {
+        assert_eq!(
+            diag.len(),
+            self.len(),
+            "scale_diag_assign dimension mismatch"
+        );
+        ndarray::Zip::from(self).and(diag).for_each(|a, scale| {
+            *a = *a * *scale;
+        });
+    }
+
+    fn add_diag_scaled_assign(&mut self, other: &Self, diag: &[Self::Scalar], alpha: Self::Scalar) {
+        assert_eq!(
+            diag.len(),
+            self.len(),
+            "add_diag_scaled_assign dimension mismatch"
+        );
+        ndarray::Zip::from(self)
+            .and(other)
+            .and(diag)
+            .for_each(|a, b, scale| {
+                *a = *a + *b * *scale * alpha;
+            });
+    }
+
     fn dot(&self, other: &Self) -> Self::Scalar {
         self.view().dot(&other.view())
+    }
+
+    fn quad_form_diag(&self, diag: &[Self::Scalar]) -> Self::Scalar {
+        assert_eq!(diag.len(), self.len(), "quad_form_diag dimension mismatch");
+        self.iter()
+            .zip(diag.iter())
+            .fold(T::zero(), |acc, (&x, &d)| acc + x * x * d)
     }
 
     fn fill_standard_normal(&mut self, rng: &mut impl Rng)
@@ -159,6 +200,9 @@ pub trait BatchVector: EuclideanVector {
     /// Returns [n_chains] energies for batch, or single scalar for single chain.
     fn kinetic_energy(&self) -> Self::Energy;
 
+    /// Per-chain kinetic energy under a diagonal inverse mass.
+    fn kinetic_energy_diag(&self, inv_diag: &[Self::Scalar]) -> Self::Energy;
+
     /// Conditional update: self[i] = other[i] where mask[i] is true.
     /// For GPU: uses mask_where kernel. For CPU: simple if-else.
     fn masked_assign(&mut self, other: &Self, mask: &Self::Mask);
@@ -188,6 +232,9 @@ pub trait BatchVector: EuclideanVector {
     /// Natural log of energy (for ln(u) in acceptance)
     fn energy_ln(a: &Self::Energy) -> Self::Energy;
 
+    /// Mean Metropolis acceptance probability for the current proposal batch.
+    fn mean_acceptance(log_accept: &Self::Energy) -> Self::Scalar;
+
     // --- Acceptance logic ---
 
     /// Create acceptance mask: returns true where log_accept >= ln_u
@@ -213,6 +260,10 @@ where
 
     fn kinetic_energy(&self) -> T {
         self.dot(self) * T::from(0.5).unwrap()
+    }
+
+    fn kinetic_energy_diag(&self, inv_diag: &[Self::Scalar]) -> T {
+        self.quad_form_diag(inv_diag) * T::from(0.5).unwrap()
     }
 
     fn masked_assign(&mut self, other: &Self, mask: &bool) {
@@ -255,6 +306,16 @@ where
         a.ln()
     }
 
+    fn mean_acceptance(log_accept: &T) -> T {
+        if !log_accept.is_finite() {
+            T::zero()
+        } else if *log_accept < T::zero() {
+            log_accept.exp()
+        } else {
+            T::one()
+        }
+    }
+
     fn accept_mask(log_accept: &T, ln_u: &T) -> bool {
         *log_accept >= *ln_u
     }
@@ -267,10 +328,25 @@ mod burn_impl {
     use burn::tensor::Element;
     use burn::tensor::ElementConversion;
     use num_traits::{Float, FromPrimitive};
-    use rand::distr::Distribution as RandDistribution;
     use rand::Rng;
-    use rand_distr::uniform::SampleUniform;
+    use rand::distr::Distribution as RandDistribution;
     use rand_distr::StandardNormal;
+    use rand_distr::uniform::SampleUniform;
+
+    fn expand_diag<T, B>(diag: &[T], n_rows: usize) -> Tensor<B, 2>
+    where
+        T: Float + Element + ElementConversion + SampleUniform + FromPrimitive + Copy,
+        B: Backend<FloatElem = T>,
+        StandardNormal: RandDistribution<T>,
+    {
+        let dim = diag.len();
+        let base: Tensor<B, 2> = Tensor::<B, 1>::from_data(
+            burn::tensor::TensorData::new(diag.to_vec(), [dim]),
+            &B::Device::default(),
+        )
+        .unsqueeze_dim(0);
+        base.expand([n_rows, dim])
+    }
 
     impl<T, B> EuclideanVector for Tensor<B, 1>
     where
@@ -313,8 +389,53 @@ mod burn_impl {
             self.inplace(|x| x.mul_scalar(alpha));
         }
 
+        fn scale_diag_assign(&mut self, diag: &[Self::Scalar]) {
+            assert_eq!(
+                diag.len(),
+                self.len(),
+                "scale_diag_assign dimension mismatch"
+            );
+            let scale: Tensor<B, 1> = Tensor::<B, 1>::from_data(
+                burn::tensor::TensorData::new(diag.to_vec(), [self.len()]),
+                &B::Device::default(),
+            );
+            self.inplace(|x| x.mul(scale));
+        }
+
+        fn add_diag_scaled_assign(
+            &mut self,
+            other: &Self,
+            diag: &[Self::Scalar],
+            alpha: Self::Scalar,
+        ) {
+            assert_eq!(
+                diag.len(),
+                self.len(),
+                "add_diag_scaled_assign dimension mismatch"
+            );
+            let scale: Tensor<B, 1> = Tensor::<B, 1>::from_data(
+                burn::tensor::TensorData::new(diag.to_vec(), [self.len()]),
+                &B::Device::default(),
+            )
+            .mul_scalar(alpha);
+            self.inplace(|x| x.add(other.clone().mul(scale)));
+        }
+
         fn dot(&self, other: &Self) -> Self::Scalar {
             self.clone().mul(other.clone()).sum().into_scalar()
+        }
+
+        fn quad_form_diag(&self, diag: &[Self::Scalar]) -> Self::Scalar {
+            assert_eq!(diag.len(), self.len(), "quad_form_diag dimension mismatch");
+            let scale: Tensor<B, 1> = Tensor::<B, 1>::from_data(
+                burn::tensor::TensorData::new(diag.to_vec(), [self.len()]),
+                &B::Device::default(),
+            );
+            self.clone()
+                .mul(self.clone())
+                .mul(scale)
+                .sum()
+                .into_scalar()
         }
 
         fn fill_standard_normal(&mut self, _rng: &mut impl Rng)
@@ -397,9 +518,42 @@ mod burn_impl {
             self.inplace(|x| x.mul_scalar(alpha));
         }
 
+        fn scale_diag_assign(&mut self, diag: &[Self::Scalar]) {
+            let dims = self.dims();
+            let dim = dims[1];
+            assert_eq!(diag.len(), dim, "scale_diag_assign dimension mismatch");
+            let scale = expand_diag::<T, B>(diag, dims[0]);
+            self.inplace(|x| x.mul(scale));
+        }
+
+        fn add_diag_scaled_assign(
+            &mut self,
+            other: &Self,
+            diag: &[Self::Scalar],
+            alpha: Self::Scalar,
+        ) {
+            let dims = self.dims();
+            let dim = dims[1];
+            assert_eq!(diag.len(), dim, "add_diag_scaled_assign dimension mismatch");
+            let scale = expand_diag::<T, B>(diag, dims[0]).mul_scalar(alpha);
+            self.inplace(|x| x.add(other.clone().mul(scale)));
+        }
+
         fn dot(&self, other: &Self) -> Self::Scalar {
             // Global dot product (sum over all elements)
             self.clone().mul(other.clone()).sum().into_scalar()
+        }
+
+        fn quad_form_diag(&self, diag: &[Self::Scalar]) -> Self::Scalar {
+            let dims = self.dims();
+            let dim = dims[1];
+            assert_eq!(diag.len(), dim, "quad_form_diag dimension mismatch");
+            let scale = expand_diag::<T, B>(diag, dims[0]);
+            self.clone()
+                .mul(self.clone())
+                .mul(scale)
+                .sum()
+                .into_scalar()
         }
 
         fn fill_standard_normal(&mut self, _rng: &mut impl Rng)
@@ -471,6 +625,22 @@ mod burn_impl {
                 .mul_scalar(T::from(0.5).unwrap())
         }
 
+        fn kinetic_energy_diag(&self, inv_diag: &[Self::Scalar]) -> Tensor<B, 1> {
+            assert_eq!(
+                inv_diag.len(),
+                self.dims()[1],
+                "kinetic_energy_diag dimension mismatch"
+            );
+            let n_chains = self.dims()[0];
+            let inv = expand_diag::<T, B>(inv_diag, n_chains);
+            self.clone()
+                .mul(self.clone())
+                .mul(inv)
+                .sum_dim(1)
+                .squeeze(1)
+                .mul_scalar(T::from(0.5).unwrap())
+        }
+
         fn masked_assign(&mut self, other: &Self, mask: &Tensor<B, 1, burn::tensor::Bool>) {
             // Expand mask from [n_chains] to [n_chains, dim]
             let n_chains = self.dims()[0];
@@ -522,6 +692,23 @@ mod burn_impl {
 
         fn energy_ln(a: &Tensor<B, 1>) -> Tensor<B, 1> {
             a.clone().log()
+        }
+
+        fn mean_acceptance(log_accept: &Tensor<B, 1>) -> T {
+            let data = log_accept.to_data();
+            let values = data
+                .as_slice::<T>()
+                .expect("Expected batched log acceptance tensor to be dense");
+            let total = values.iter().copied().fold(T::zero(), |sum, value| {
+                if !value.is_finite() {
+                    sum
+                } else if value < T::zero() {
+                    sum + value.exp()
+                } else {
+                    sum + T::one()
+                }
+            });
+            total / T::from_usize(values.len()).unwrap()
         }
 
         fn accept_mask(

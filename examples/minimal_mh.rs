@@ -1,4 +1,4 @@
-use general_mcmc::core::{init_det, ChainRunner};
+use general_mcmc::core::{ChainRunner, init_det};
 use general_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
 use general_mcmc::metropolis_hastings::MetropolisHastings;
 use ndarray::{arr1, arr2};

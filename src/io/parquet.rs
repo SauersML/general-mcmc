@@ -224,7 +224,7 @@ where
 mod tests {
     use super::*;
     use arrow::array::{Float64Array, UInt32Array};
-    use burn::backend::{ndarray::NdArrayDevice, NdArray};
+    use burn::backend::{NdArray, ndarray::NdArrayDevice};
     use ndarray::arr3;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use std::fs;
@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn test_save_parquet_empty_data() -> Result<(), Box<dyn Error>> {
         let data = arr3::<f32, 0, 0>(&[]); // no chains
-                                           // let file = NamedTempFile::new()?;
+        // let file = NamedTempFile::new()?;
         let file = NamedTempFile::new().expect("Could not create temp file");
         let filename = file.path().to_str().unwrap();
 

@@ -43,9 +43,9 @@ println!("Candidate state: {:?}", candidate);
 */
 
 use burn::prelude::*;
-use burn::tensor::backend::AutodiffBackend;
 use burn::tensor::Element;
-use ndarray::{arr1, arr2, Array1, Array2, NdFloat};
+use burn::tensor::backend::AutodiffBackend;
+use ndarray::{Array1, Array2, NdFloat, arr1, arr2};
 use num_traits::Float;
 use rand::distr::Distribution as RandDistribution;
 // Use rand's Distribution trait to avoid version-mismatch when rand 0.8 and 0.9 coexist in deps.
@@ -237,9 +237,9 @@ where
             [-cov[1][0] * inv_det, cov[0][0] * inv_det],
         ];
         let logdet_cov = det_cov.ln(); // T must implement Float
-                                       // Normalization constant for log pdf in 2 dimensions:
-                                       //   - (1/2) * (dim * ln(2 pi) + ln(|Sigma|))
-                                       //   = -1/2 [ 2 * ln(2*pi) + ln(det_cov) ]
+        // Normalization constant for log pdf in 2 dimensions:
+        //   - (1/2) * (dim * ln(2 pi) + ln(|Sigma|))
+        //   = -1/2 [ 2 * ln(2*pi) + ln(det_cov) ]
         let two = T::one() + T::one();
         let norm_const = -(two * (two * T::PI()).ln() + logdet_cov) / two;
 

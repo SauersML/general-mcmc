@@ -1,15 +1,15 @@
 //! A small MCMC demo using Gibbs sampling to sample from a 2D mixture distribution.
 //! The target is a two-component Gaussian mixture (over a state [x, z]).
 
-use general_mcmc::core::{init_det, ChainRunner};
+use general_mcmc::core::{ChainRunner, init_det};
 use general_mcmc::distributions::Conditional;
 use general_mcmc::gibbs::GibbsSampler;
 use ndarray::Axis;
 use plotly::{
-    common::{MarkerSymbol, Mode},
     Layout, Scatter,
+    common::{MarkerSymbol, Mode},
 };
-use rand::{rng, Rng};
+use rand::{Rng, rng};
 use rand_distr::Normal;
 use std::error::Error;
 

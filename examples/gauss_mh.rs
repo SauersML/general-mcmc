@@ -1,15 +1,15 @@
 //! A small MCMC demo using Metropolis-Hastings to sample from a 2D Gaussian, then plotting the sample.
 
-use general_mcmc::core::{init_det, ChainRunner};
+use general_mcmc::core::{ChainRunner, init_det};
 use general_mcmc::distributions::{Gaussian2D, IsotropicGaussian, Proposal};
 use general_mcmc::metropolis_hastings::MetropolisHastings;
 
-use ndarray::{arr1, arr2, Axis};
+use ndarray::{Axis, arr1, arr2};
 use plotly::{
-    common::{MarkerSymbol, Mode},
     Layout, Scatter,
+    common::{MarkerSymbol, Mode},
 };
-use rand::{rng, Rng};
+use rand::{Rng, rng};
 use std::error::Error;
 
 #[cfg(feature = "parquet")]

@@ -2,10 +2,10 @@
 //! Reduction.
 
 use core::fmt;
-use ndarray::{concatenate, prelude::*, stack};
+use ndarray::{Zip, concatenate, prelude::*};
 use num_traits::{Num, ToPrimitive};
 use rayon::prelude::*;
-use rustfft::{num_complex::Complex, FftPlanner};
+use rustfft::{FftPlanner, num_complex::Complex};
 use std::{cmp::Ordering, error::Error};
 
 const ALPHA: f32 = 0.01;
@@ -180,10 +180,11 @@ fn withinvar_from_cs(chain_stats: &[&ChainStats]) -> (Array1<f32>, Array1<f32>) 
             .expect("Expected broadcasting to succeed"))
     .into_dimensionality()
     .expect("Expected casting dimensionality to Array1 to succeed");
-    let between = diffs.pow2().sum_axis(Axis(0)) / (diffs.len() - 1) as f32;
+    let n_chains = means.shape()[0] as f32;
+    let n = chain_stats.iter().map(|x| x.n as f32).sum::<f32>() / n_chains;
+    let between = diffs.pow2().sum_axis(Axis(0)) * (n / (n_chains - 1.0));
 
-    let n: f32 = chain_stats.iter().map(|x| x.n as f32).sum::<f32>() / chain_stats.len() as f32;
-    let var = between + within.clone() * ((n - 1.0) / n);
+    let var = between * (1.0 / n) + within.clone() * ((n - 1.0) / n);
     (within, var)
 }
 
@@ -339,7 +340,7 @@ impl MultiChainTracker {
 }
 
 /// Computes basic statistics from
-pub fn basic_stats(name: &str, mut data: Array1<f32>) -> BasicStats {
+pub fn basic_stats(name: &str, mut data: Array1<f64>) -> BasicStats {
     data.as_slice_mut()
         .unwrap()
         .sort_by(|a, b| match b.partial_cmp(a) {
@@ -380,13 +381,22 @@ impl fmt::Display for RunStats {
     }
 }
 
+impl RunStats {
+    pub fn min_ess(&self) -> f64 {
+        self.ess.min
+    }
+
+    pub fn max_rhat(&self) -> f64 {
+        self.rhat.max
+    }
+}
+
 impl<T> From<ArrayView3<'_, T>> for RunStats
 where
     T: ToPrimitive + std::clone::Clone,
 {
     fn from(sample: ArrayView3<T>) -> Self {
-        let f32_sample = sample.mapv(|x| x.to_f32().unwrap());
-        let (rhat, ess) = split_rhat_mean_ess(f32_sample.view());
+        let (rhat, ess) = split_rhat_mean_ess(sample);
         let ess = basic_stats("ESS", ess);
         let rhat = basic_stats("Split R-hat", rhat);
         RunStats { ess, rhat }
@@ -396,11 +406,11 @@ where
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub struct BasicStats {
     pub name: String,
-    pub min: f32,
-    pub median: f32,
-    pub max: f32,
-    pub mean: f32,
-    pub std: f32,
+    pub min: f64,
+    pub median: f64,
+    pub max: f64,
+    pub mean: f64,
+    pub std: f64,
 }
 
 impl fmt::Display for BasicStats {
@@ -416,7 +426,7 @@ impl fmt::Display for BasicStats {
 
 /// Takes a (chains, observations, parameters) view and returns a new
 /// (2*chains, observations/2, parameters) array by splitting each chain in half.
-fn splitcat(sample: ArrayView3<f32>) -> Array3<f32> {
+fn splitcat(sample: ArrayView3<f64>) -> Array3<f64> {
     let n = sample.shape()[1];
     let half = (n / 2) as i32;
     let half_1 = sample.slice(s![.., ..half, ..]);
@@ -436,12 +446,12 @@ fn splitcat(sample: ArrayView3<f32>) -> Array3<f32> {
 ///
 /// # References
 /// - STAN Reference Manual, Section on R-hat and Effective Sample Size
-pub fn split_rhat_mean_ess<T>(sample: ArrayView3<T>) -> (Array1<f32>, Array1<f32>)
+pub fn split_rhat_mean_ess<T>(sample: ArrayView3<T>) -> (Array1<f64>, Array1<f64>)
 where
     T: ToPrimitive + Clone,
 {
-    let f32_sample = sample.mapv(|x| x.to_f32().unwrap());
-    let splitted = splitcat(f32_sample.view()); // shape: (2c, n/2, p)
+    let sample_f64 = sample.mapv(|x| x.to_f64().unwrap());
+    let splitted = splitcat(sample_f64.view()); // shape: (2c, n/2, p)
     let (within, var) = withinvar(splitted.view());
     (
         rhat(within.view(), var.view()),
@@ -449,18 +459,30 @@ where
     )
 }
 
-fn rhat(within: ArrayView1<f32>, var: ArrayView1<f32>) -> Array1<f32> {
-    (within.to_owned() / var).sqrt()
+fn rhat(within: ArrayView1<f64>, var: ArrayView1<f64>) -> Array1<f64> {
+    Zip::from(&within).and(&var).map_collect(|&w, &v| {
+        if w.abs() <= f64::EPSILON && v.abs() <= f64::EPSILON {
+            1.0
+        } else if w.abs() <= f64::EPSILON {
+            f64::INFINITY
+        } else {
+            (v / w).sqrt()
+        }
+    })
 }
 
-fn withinvar(sample: ArrayView3<f32>) -> (Array1<f32>, Array1<f32>) {
+fn withinvar(sample: ArrayView3<f64>) -> (Array1<f64>, Array1<f64>) {
     let c = sample.shape()[0];
     let n = sample.shape()[1];
     let p = sample.shape()[2];
+    assert!(
+        c >= 2 && n >= 2,
+        "split R-hat and ESS require at least 2 split chains and 2 draws per split chain"
+    );
 
     // 2) For each parameter, compute the chain-split stats
     //    shape for data_p is (2c, n/2)
-    let (within, var): (Vec<f32>, Vec<f32>) = (0..p)
+    let (within, var): (Vec<f64>, Vec<f64>) = (0..p)
         .into_par_iter()
         .map(|param_idx| {
             let data_p = sample.slice(s![.., .., param_idx]);
@@ -473,7 +495,8 @@ fn withinvar(sample: ArrayView3<f32>) -> (Array1<f32>, Array1<f32>) {
             //   = (n/2 / (2c - 1)) * sum( (chain_means - overall_mean)^2 )
             // (We assume 2c > 1)
             let diff = &chain_means - overall_mean;
-            let b = diff.pow2().sum() * ((n as f32) / ((c - 1) as f32));
+            let split_n = n as f64;
+            let b = diff.pow2().sum() * (split_n / ((c - 1) as f64));
 
             // within => we broadcast chain_means to shape (2c, n/2) to subtract
             // but an easier approach might be:
@@ -483,17 +506,17 @@ fn withinvar(sample: ArrayView3<f32>) -> (Array1<f32>, Array1<f32>) {
             for chain_i in 0..c {
                 let row = data_p.slice(s![chain_i, ..]);
                 let cm = chain_means[chain_i];
-                let sq = row.iter().map(|v| (v - cm) * (v - cm)).sum::<f32>() / (n as f32);
+                let sq = row.iter().map(|v| (v - cm) * (v - cm)).sum::<f64>() / (split_n - 1.0);
                 squares.push(sq);
             }
             let squares = Array1::from(squares); // shape (2c,)
             let w = squares.mean().unwrap(); // within = average across chains
-                                             // var => ((n/2 - 1)/(n/2)) * w + b/(n/2)
-            let v = ((n as f32 - 1.0) / (n as f32)) * w + b / (n as f32);
+            // var => ((n/2 - 1)/(n/2)) * w + b/(n/2)
+            let v = ((split_n - 1.0) / split_n) * w + b / split_n;
 
             (w, v)
         })
-        .collect::<Vec<(f32, f32)>>()
+        .collect::<Vec<(f64, f64)>>()
         .into_iter()
         .fold((vec![], vec![]), |(mut within, mut var), (w, v)| {
             within.push(w);
@@ -520,42 +543,45 @@ fn withinvar(sample: ArrayView3<f32>) -> (Array1<f32>, Array1<f32>) {
 /// # References
 /// - STAN Reference Manual, Section on Effective Sample Size
 ///   (https://mc-stan.org/docs/2_18/reference-manual/effective-sample-size-section.html)
-fn ess(sample: ArrayView3<f32>, within: ArrayView1<f32>, var: ArrayView1<f32>) -> Array1<f32> {
+fn ess(sample: ArrayView3<f64>, within: ArrayView1<f64>, var: ArrayView1<f64>) -> Array1<f64> {
     let shape = sample.shape();
     let (n_chains, n_steps, n_params) = (shape[0], shape[1], shape[2]);
-    let chain_rho: Vec<Array2<f32>> = (0..n_chains)
+    let chain_rho: Vec<Array2<f64>> = (0..n_chains)
         .map(|c| {
             let chain_sample = sample.index_axis(Axis(0), c);
             autocov(chain_sample)
         })
         .collect();
-    let chain_rho: Vec<ArrayView2<f32>> = chain_rho.iter().map(|x| x.view()).collect();
-    let chain_rho = stack(Axis(0), &chain_rho)
-        .expect("Expected stacking chain-specific autocovariance matrices to succeed");
-    let avg_rho = chain_rho.mean_axis(Axis(0)).unwrap();
-    let diff = -avg_rho
-        + within
-            .broadcast((n_steps, n_params))
-            .expect("Expected broadcasting to succeed");
-    let rho = -(diff
-        / var
-            .broadcast((n_steps, n_params))
-            .expect("Expected broadcasting to succeed"))
-        + 1.0;
-    let tau: Vec<f32> = (0..n_params)
+    let mut avg_cov = Array2::<f64>::zeros((n_steps, n_params));
+    for chain_cov in chain_rho {
+        avg_cov += &chain_cov;
+    }
+    avg_cov.mapv_inplace(|x| x / n_chains as f64);
+
+    let total_draws = n_chains as f64 * n_steps as f64;
+    let ess_vals: Vec<f64> = (0..n_params)
         .into_par_iter()
         .map(|d| {
-            let rho_d = rho.index_axis(Axis(1), d).to_owned();
+            let w = within[d];
+            let v = var[d];
+            if w.abs() <= f64::EPSILON && v.abs() <= f64::EPSILON {
+                return total_draws;
+            }
+            if !v.is_finite() || v <= 0.0 {
+                return f64::NAN;
+            }
 
-            let mut min = if rho_d.len() >= 2 {
-                rho_d[[0]] + rho_d[[1]]
+            let rho_at = |lag| 1.0 - (w - avg_cov[[lag, d]]) / v;
+            let mut min = if n_steps >= 2 {
+                rho_at(0) + rho_at(1)
             } else {
                 0.0
             };
 
             let mut out = 0.0;
-            for rho_t in rho_d.windows_with_stride(2, 2) {
-                let mut p_t = rho_t[0] + rho_t[1];
+            let mut lag = 0;
+            while lag + 1 < n_steps {
+                let mut p_t = rho_at(lag) + rho_at(lag + 1);
                 if p_t <= 0.0 {
                     break;
                 }
@@ -564,15 +590,17 @@ fn ess(sample: ArrayView3<f32>, within: ArrayView1<f32>, var: ArrayView1<f32>) -
                 }
                 min = p_t;
                 out += p_t;
+                lag += 2;
             }
-            -1.0 + 2.0 * out
+
+            let tau = (-1.0 + 2.0 * out).max(1.0);
+            total_draws / tau
         })
         .collect();
-    let tau = Array1::from_vec(tau);
-    tau.recip() * n_chains as f32 * n_steps as f32
+    Array1::from_vec(ess_vals)
 }
 
-fn autocov(sample: ArrayView2<f32>) -> Array2<f32> {
+fn autocov(sample: ArrayView2<f64>) -> Array2<f64> {
     if sample.nrows() <= 100 {
         autocov_bf(sample)
     } else {
@@ -585,13 +613,13 @@ fn autocov(sample: ArrayView2<f32>) -> Array2<f32> {
 ///
 /// # Arguments
 ///
-/// * `sample` - A 2-dimensional array view (`ArrayView2<f32>`) of shape `(n, d)`, where:
+/// * `sample` - A 2-dimensional array view (`ArrayView2<f64>`) of shape `(n, d)`, where:
 ///     - `n`: length of each sequence.
 ///     - `d`: number of sequences (each column is treated independently).
 ///
 /// # Returns
 ///
-/// An `Array2<f32>` of shape `(n, d)` containing the autocovariance results.
+/// An `Array2<f64>` of shape `(n, d)` containing the autocovariance results.
 /// Each column contains the autocovariance values for the corresponding input sequence.
 ///
 /// # Notes
@@ -600,8 +628,9 @@ fn autocov(sample: ArrayView2<f32>) -> Array2<f32> {
 /// * FFT and inverse FFT are performed using the `rustfft` crate.
 /// * Computation is parallelized across sequences using Rayon.
 /// * Normalization (`1/n_padded`) is applied explicitly, as `rustfft` does not normalize results.
-fn autocov_fft(sample: ArrayView2<f32>) -> Array2<f32> {
+fn autocov_fft(sample: ArrayView2<f64>) -> Array2<f64> {
     let (n, d) = (sample.shape()[0], sample.shape()[1]);
+    assert!(n >= 2, "autocovariance requires at least two draws");
     let mut planner = FftPlanner::new();
 
     // Next power of 2 >= 2*n - 1 for zero-padding to avoid wrap-around.
@@ -611,24 +640,18 @@ fn autocov_fft(sample: ArrayView2<f32>) -> Array2<f32> {
     }
     let fft = planner.plan_fft_forward(n_padded);
     let ffti = planner.plan_fft_inverse(n_padded);
-    let out: Vec<f32> = sample
+    let out: Vec<f64> = sample
         .axis_iter(Axis(1))
         .into_par_iter()
         .map(|traj| {
-            let traj_mean = traj.sum() / traj.len() as f32;
-            let mut x: Vec<Complex<f32>> = traj
+            let traj_mean = traj.sum() / traj.len() as f64;
+            let mut x: Vec<Complex<f64>> = traj
                 .iter()
                 .map(|xi| Complex {
                     re: (*xi - traj_mean),
-                    im: 0.0f32,
+                    im: 0.0,
                 })
-                .chain(
-                    [Complex {
-                        re: 0.0f32,
-                        im: 0.0f32,
-                    }]
-                    .repeat(n_padded - n),
-                )
+                .chain([Complex { re: 0.0, im: 0.0 }].repeat(n_padded - n))
                 .collect();
             fft.process(x.as_mut_slice());
             x.iter_mut().for_each(|xi| {
@@ -637,8 +660,8 @@ fn autocov_fft(sample: ArrayView2<f32>) -> Array2<f32> {
             ffti.process(x.as_mut_slice());
             x.iter_mut()
                 .take(n)
-                .map(|xi| xi.re / n_padded as f32 / n as f32) // rustfft doens't normalize for us
-                .collect::<Vec<f32>>()
+                .map(|xi| xi.re / n_padded as f64 / (n as f64 - 1.0)) // rustfft doesn't normalize for us
+                .collect::<Vec<f64>>()
         })
         .flatten_iter()
         .collect();
@@ -656,9 +679,11 @@ fn autocov_fft(sample: ArrayView2<f32>) -> Array2<f32> {
 ///    sum_{t=0..(n - lag - 1)} [ data[t, col] * data[t + lag, col] ]
 /// $$
 /// and stores it in `out[lag, col]`.
-fn autocov_bf(data: ArrayView2<f32>) -> Array2<f32> {
+fn autocov_bf(data: ArrayView2<f64>) -> Array2<f64> {
     let (n, d) = data.dim();
-    let mut out = Array2::<f32>::zeros((n, d));
+    assert!(n >= 2, "autocovariance requires at least two draws");
+    let mut out = Array2::<f64>::zeros((n, d));
+    let norm = n as f64 - 1.0;
 
     out.axis_iter_mut(Axis(1)) // mutable view of each column in `out`
         .into_par_iter() // make it parallel
@@ -674,7 +699,7 @@ fn autocov_bf(data: ArrayView2<f32>) -> Array2<f32> {
                     sum_lag += col_data[t] * col_data[t + lag];
                 }
                 // Write result into the current column
-                out_col[lag] = sum_lag / n as f32;
+                out_col[lag] = sum_lag / norm;
             }
         });
     out
@@ -692,9 +717,12 @@ fn autocov_bf(data: ArrayView2<f32>) -> Array2<f32> {
 ///
 /// # References
 /// - STAN Reference Manual, Section on Effective Sample Size
-pub fn ess_from_chainstats(sample: ArrayView3<f32>, chain_stats: &[&ChainStats]) -> Array1<f32> {
+pub fn ess_from_chainstats(sample: ArrayView3<f32>, chain_stats: &[&ChainStats]) -> Array1<f64> {
     let (within, var) = withinvar_from_cs(chain_stats);
-    ess(sample, within.view(), var.view())
+    let sample = sample.mapv(f64::from);
+    let within = within.mapv(f64::from);
+    let var = var.mapv(f64::from);
+    ess(sample.view(), within.view(), var.view())
 }
 
 #[cfg(test)]
@@ -783,9 +811,9 @@ mod tests {
     }
 
     fn run_test_case(
-        autocov_func: &dyn Fn(ArrayView2<f32>) -> Array2<f32>,
-        data: &Array2<f32>,
-        expected: &Array2<f32>,
+        autocov_func: &dyn Fn(ArrayView2<f64>) -> Array2<f64>,
+        data: &Array2<f64>,
+        expected: &Array2<f64>,
         test_name: &str,
     ) {
         let result = autocov_func(data.view());
@@ -798,7 +826,7 @@ mod tests {
             expected.dim()
         );
 
-        assert_abs_diff_eq!(result, *expected, epsilon = 1e-6);
+        assert_abs_diff_eq!(result, *expected, epsilon = 1e-9);
         println!("Test: {test_name} succeeded");
     }
 
@@ -808,7 +836,7 @@ mod tests {
     #[test]
     fn test_single_param() {
         let data = array![[1.0], [2.0], [3.0], [4.0],];
-        let expected = array![[1.25], [0.3125], [-0.375], [-0.5625]];
+        let expected = array![[1.6666666666666667], [0.4166666666666667], [-0.5], [-0.75]];
 
         // Compare brute force
         run_test_case(&autocov_bf, &data, &expected, "BF: single_param_small");
@@ -826,16 +854,85 @@ mod tests {
     fn test_two_params_1() {
         let data = array![[1.0, 0.3], [2.0, 2.0], [3.0, -2.0], [4.0, 5.0],];
         let expected = array![
-            [1.25, 6.516875],
-            [0.3125, -3.7889063],
-            [-0.375, 1.4721875],
-            [-0.5625, -0.94171875],
+            [1.6666666666666667, 8.689166666666667],
+            [0.4166666666666667, -5.051875],
+            [-0.5, 1.9629166666666666],
+            [-0.75, -1.255625],
         ];
 
         // Compare brute force
         run_test_case(&autocov_bf, &data, &expected, "BF: two_params_small");
         // Compare FFT-based
         run_test_case(&autocov_fft, &data, &expected, "FFT: two_params_small");
+    }
+
+    #[test]
+    fn test_split_rhat_matches_manual_formula() {
+        let sample = array![
+            [[0.0_f64], [1.0], [0.0], [1.0]],
+            [[10.0], [11.0], [10.0], [11.0]],
+        ];
+        let split = splitcat(sample.view());
+        let (within, var) = withinvar(split.view());
+        let expected = (var / within).sqrt();
+        let (rhat, _) = split_rhat_mean_ess(sample.view());
+        assert_abs_diff_eq!(rhat, expected, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn test_split_rhat_stuck_chains_is_infinite() {
+        let sample = array![
+            [[0.0_f64], [0.0], [0.0], [0.0]],
+            [[10.0], [10.0], [10.0], [10.0]],
+        ];
+        let (rhat, _) = split_rhat_mean_ess(sample.view());
+        assert!(
+            rhat[0].is_infinite(),
+            "Expected split R-hat to blow up for separated stuck chains, got {rhat:?}"
+        );
+    }
+
+    #[test]
+    fn test_split_stats_constant_identical_chains_are_finite() {
+        let sample = array![
+            [[3.0_f64], [3.0], [3.0], [3.0]],
+            [[3.0_f64], [3.0], [3.0], [3.0]],
+        ];
+        let (rhat, ess) = split_rhat_mean_ess(sample.view());
+        assert_abs_diff_eq!(rhat[0], 1.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(ess[0], 8.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn test_collect_rhat_matches_multichain_tracker() {
+        let data_step_0: Array2<f32> = arr2(&[
+            [0.0, 1.0, 0.0, 1.0],
+            [1.0, 2.0, 0.0, 2.0],
+            [0.0, 0.0, 0.0, 2.0],
+        ]);
+        let data_step_1: Array2<f32> = arr2(&[
+            [1.0, 2.0, 2.0, 0.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [0.0, 1.0, 0.0, 0.0],
+        ]);
+
+        let mut trackers = (0..3)
+            .map(|chain| ChainTracker::new(4, data_step_0.row(chain).as_slice().unwrap()))
+            .collect::<Vec<_>>();
+        let mut psr = MultiChainTracker::new(3, 4);
+
+        for step in [&data_step_0, &data_step_1] {
+            psr.step(step.as_slice().unwrap()).unwrap();
+            for (chain, tracker) in trackers.iter_mut().enumerate() {
+                tracker.step(step.row(chain).as_slice().unwrap()).unwrap();
+            }
+        }
+
+        let stats = trackers.iter().map(ChainTracker::stats).collect::<Vec<_>>();
+        let refs = stats.iter().collect::<Vec<_>>();
+        let collected = collect_rhat(refs.as_slice());
+        let tracked = psr.rhat().unwrap();
+        assert_abs_diff_eq!(collected, tracked, epsilon = 1e-6);
     }
 
     #[test]
@@ -879,8 +976,8 @@ mod tests {
             let n = 1 << exp; // 2^exp
             for rep in 1..=10 {
                 // Generate random data of size (n x 1)
-                let sample_data: Vec<f32> = (0..n * 1000).map(|_| rng.random()).collect();
-                let sample = Array2::from_shape_vec((n, 1000), sample_data)
+                let sample_data: Vec<f64> = (0..n * 1000).map(|_| rng.random()).collect();
+                let sample: Array2<f64> = Array2::from_shape_vec((n, 1000), sample_data)
                     .expect("Failed to create Array2");
 
                 // Measure FFT-based implementation

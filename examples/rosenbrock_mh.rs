@@ -1,7 +1,7 @@
 //! A small MCMC demo using Metropolis-Hastings to sample from a 2D Rosenbrock distribution,
 //! then plotting the sample.
 
-use general_mcmc::core::{init_det, ChainRunner};
+use general_mcmc::core::{ChainRunner, init_det};
 use general_mcmc::distributions::{IsotropicGaussian, Proposal, Target};
 use general_mcmc::metropolis_hastings::MetropolisHastings;
 
@@ -11,8 +11,8 @@ use general_mcmc::metropolis_hastings::MetropolisHastings;
 use ndarray::Axis;
 use num_traits::Float;
 use plotly::{
-    common::{MarkerSymbol, Mode},
     Layout, Scatter,
+    common::{MarkerSymbol, Mode},
 };
 use std::error::Error;
 

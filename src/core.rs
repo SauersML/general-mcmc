@@ -14,11 +14,11 @@ Any type implementing [`HasChains<State>`] (with the required trait bounds) auto
 This module is generic over the chain state type and the per-step trace summaries.
 */
 
-use crate::stats::{collect_rhat, max_skipnan, ChainStats, ChainTracker, RunStats};
+use crate::stats::{ChainStats, ChainTracker, RunStats, collect_rhat, max_skipnan};
 use indicatif::ProgressBar;
 use indicatif::{MultiProgress, ProgressStyle};
 use ndarray::stack;
-use ndarray::{prelude::*, ShapeError};
+use ndarray::{ShapeError, prelude::*};
 use num_traits::{Float, FromPrimitive, ToPrimitive};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};

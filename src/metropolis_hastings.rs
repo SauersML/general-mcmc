@@ -326,13 +326,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{init_det, ChainRunner}; // or run_progress, etc.
+    use crate::core::{ChainRunner, init_det}; // or run_progress, etc.
     use crate::distributions::{Gaussian2D, IsotropicGaussian};
-    use crate::stats::{basic_stats, split_rhat_mean_ess, RunStats}; // from your posted stats module
+    use crate::stats::{RunStats, basic_stats, split_rhat_mean_ess}; // from your posted stats module
     use approx::assert_abs_diff_eq;
-    use ndarray::{arr1, arr2, Array3, Axis};
-    use rand::rngs::SmallRng;
+    use ndarray::{Array3, Axis, arr1, arr2};
     use rand::SeedableRng;
+    use rand::rngs::SmallRng;
 
     /// Common test harness for checking that sample mean from a 2D Gaussian matches
     /// the true mean and covariance within floating-point tolerance.

@@ -13,14 +13,14 @@ use crate::batched_hmc::{BatchedGenericHMC, BatchedHamiltonianTarget};
 use crate::distributions::BatchedGradientTarget;
 use crate::stats::RunStats;
 use burn::prelude::*;
-use burn::tensor::backend::AutodiffBackend;
 use burn::tensor::Element;
+use burn::tensor::backend::AutodiffBackend;
 use num_traits::{Float, FromPrimitive, ToPrimitive};
 use rand::distr::Distribution as RandDistribution;
 #[cfg(test)]
 use rand::prelude::*;
-use rand_distr::uniform::SampleUniform;
 use rand_distr::StandardNormal;
+use rand_distr::uniform::SampleUniform;
 use std::error::Error;
 
 /// Adapter to convert BatchedGradientTarget to BatchedHamiltonianTarget<Tensor<B, 2>>.
@@ -147,9 +147,15 @@ where
         self
     }
 
+    pub fn set_target_accept(mut self, target_accept_p: T) -> Self {
+        self.inner = self.inner.set_target_accept(target_accept_p);
+        self
+    }
+
     /// Run the HMC sampler for `n_collect` + `n_discard` steps.
     ///
-    /// First, the sampler takes `n_discard` burn-in steps, then takes
+    /// First, the sampler uses the `n_discard` warmup steps to adapt the leapfrog step size and
+    /// diagonal mass, then takes
     /// `n_collect` further steps and collects those observations in a 3D tensor of
     /// shape `[n_chains, n_collect, D]`.
     ///
@@ -162,8 +168,7 @@ where
     ///
     /// A tensor containing the collected observations.
     pub fn run(&mut self, n_collect: usize, n_discard: usize) -> Tensor<B, 3> {
-        // Burn-in
-        (0..n_discard).for_each(|_| self.inner.step());
+        self.inner.warmup(n_discard);
 
         if n_collect == 0 {
             let dims = self.inner.positions().dims();
@@ -172,7 +177,7 @@ where
 
         let mut samples: Vec<Tensor<B, 2>> = Vec::with_capacity(n_collect);
         for _ in 0..n_collect {
-            self.inner.step();
+            let _ = self.inner.step();
             samples.push(self.inner.positions().clone());
         }
 
@@ -183,7 +188,8 @@ where
     /// Run the HMC sampler for `n_collect` + `n_discard` steps and displays progress with
     /// convergence statistics.
     ///
-    /// First, the sampler takes `n_discard` burn-in steps, then takes
+    /// First, the sampler uses the `n_discard` warmup steps to adapt the leapfrog step size and
+    /// diagonal mass, then takes
     /// `n_collect` further steps and collects those observations in a 3D tensor of
     /// shape `[n_chains, n_collect, D]`.
     ///
@@ -250,8 +256,7 @@ where
         use crate::stats::MultiChainTracker;
         use indicatif::{ProgressBar, ProgressStyle};
 
-        // Burn-in
-        (0..n_discard).for_each(|_| self.inner.step());
+        self.inner.warmup(n_discard);
 
         let dims = self.inner.positions().dims();
         let (n_chains, dim) = (dims[0], dims[1]);
@@ -271,7 +276,7 @@ where
         let sync_interval = std::time::Duration::from_millis(500);
 
         for step_idx in 0..n_collect {
-            self.inner.step();
+            let _ = self.inner.step();
             let current = self.inner.positions().clone();
             samples.push(current.clone());
             pb.inc(1);
@@ -454,6 +459,89 @@ mod tests {
     }
 
     #[test]
+    fn test_warmup_adapts_step_size() {
+        type BackendType = Autodiff<NdArray>;
+
+        let target = DiffableGaussian2D::new([0.0_f32, 1.0], [[4.0, 2.0], [2.0, 3.0]]);
+        let initial_positions = vec![vec![0.0_f32, 0.0_f32]; 4];
+        let initial_step_size = 2.0_f32;
+
+        let mut sampler = HMC::<f32, BackendType, DiffableGaussian2D<f32>>::new(
+            target,
+            initial_positions,
+            initial_step_size,
+            10,
+        )
+        .set_seed(42);
+
+        let _ = sampler.run(0, 50);
+
+        assert!(
+            *sampler.step_size() < initial_step_size,
+            "Expected warmup to reduce an overlarge step size, got {}",
+            sampler.step_size()
+        );
+    }
+
+    #[test]
+    fn test_warmup_can_increase_tiny_step_size() {
+        type BackendType = Autodiff<NdArray>;
+
+        let target = DiffableGaussian2D::new([0.0_f32, 1.0], [[4.0, 2.0], [2.0, 3.0]]);
+        let initial_positions = vec![vec![0.0_f32, 0.0_f32]; 4];
+        let initial_step_size = 1e-6_f32;
+
+        let mut sampler = HMC::<f32, BackendType, DiffableGaussian2D<f32>>::new(
+            target,
+            initial_positions,
+            initial_step_size,
+            10,
+        )
+        .set_seed(42);
+
+        let _ = sampler.run(0, 50);
+
+        assert!(
+            *sampler.step_size() > initial_step_size,
+            "Expected warmup to increase an undersized step size, got {}",
+            sampler.step_size()
+        );
+    }
+
+    #[test]
+    fn test_warmup_adapts_diagonal_mass_for_anisotropic_target() {
+        type BackendType = Autodiff<NdArray>;
+
+        let target = DiffableGaussian2D::new([0.0_f32, 0.0], [[0.25, 0.0], [0.0, 9.0]]);
+        let initial_positions = vec![
+            vec![-1.5_f32, -9.0],
+            vec![-0.5, -3.0],
+            vec![0.5, 3.0],
+            vec![1.5, 9.0],
+        ];
+
+        let mut sampler = HMC::<f32, BackendType, DiffableGaussian2D<f32>>::new(
+            target,
+            initial_positions,
+            0.3,
+            8,
+        )
+        .set_seed(42);
+
+        let _ = sampler.run(0, 120);
+
+        let mass = sampler.inner.mass_diag();
+        assert_eq!(mass.len(), 2);
+        assert!(mass[0].is_finite() && mass[0] > 0.0);
+        assert!(mass[1].is_finite() && mass[1] > 0.0);
+        assert!(
+            mass[1] > mass[0] * 4.0,
+            "Expected warmup to learn a larger mass for the broader axis, got {:?}",
+            mass
+        );
+    }
+
+    #[test]
     #[ignore = "Benchmark test: run only when explicitly requested"]
     fn test_gaussian_2d_hmc_single_run() {
         // Each experiment uses 3 chains:
@@ -596,20 +684,21 @@ mod tests {
             // Update progress bar with current ESS statistics across runs
             if run > 0 {
                 // Calculate mean and std of ESS for both parameters across all runs so far
-                let mean_ess1 = ess_param1s.iter().sum::<f32>() / (run as f32 + 1.0);
-                let mean_ess2 = ess_param2s.iter().sum::<f32>() / (run as f32 + 1.0);
+                let n_runs = run as f64 + 1.0;
+                let mean_ess1 = ess_param1s.iter().sum::<f64>() / n_runs;
+                let mean_ess2 = ess_param2s.iter().sum::<f64>() / n_runs;
 
                 // Calculate standard deviations
                 let var_ess1 = ess_param1s
                     .iter()
                     .map(|&x| (x - mean_ess1).powi(2))
-                    .sum::<f32>()
-                    / (run as f32 + 1.0);
+                    .sum::<f64>()
+                    / n_runs;
                 let var_ess2 = ess_param2s
                     .iter()
                     .map(|&x| (x - mean_ess2).powi(2))
-                    .sum::<f32>()
-                    / (run as f32 + 1.0);
+                    .sum::<f64>()
+                    / n_runs;
 
                 let std_ess1 = var_ess1.sqrt();
                 let std_ess2 = var_ess2.sqrt();
@@ -697,9 +786,9 @@ mod tests {
         let data = sample.to_data();
         let array = ArrayView3::from_shape(sample.dims(), data.as_slice::<f32>().unwrap()).unwrap();
         let (split_rhat, ess) = split_rhat_mean_ess(array);
-        let min_rhat = split_rhat.iter().cloned().fold(f32::INFINITY, f32::min);
-        let min_ess = ess.iter().cloned().fold(f32::INFINITY, f32::min);
-        println!("MIN Split Rhat: {}", min_rhat);
+        let max_rhat = split_rhat.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let min_ess = ess.iter().cloned().fold(f64::INFINITY, f64::min);
+        println!("MAX Split Rhat: {}", max_rhat);
         println!("MIN ESS: {}", min_ess);
     }
 

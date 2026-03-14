@@ -8,7 +8,7 @@ mod tests {
     use general_mcmc::distributions::Proposal;
     use general_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
     use general_mcmc::metropolis_hastings::MetropolisHastings;
-    use ndarray::{arr1, arr2, Axis};
+    use ndarray::{Axis, arr1, arr2};
 
     // Shared constants.
     const SAMPLE_SIZE: usize = 10_000;

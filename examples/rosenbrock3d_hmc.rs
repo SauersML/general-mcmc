@@ -4,7 +4,7 @@ use general_mcmc::core::init_det;
 use general_mcmc::distributions::BatchedGradientTarget;
 use general_mcmc::hmc::HMC;
 use num_traits::Float;
-use plotly::common::{color::Rgba, Mode};
+use plotly::common::{Mode, color::Rgba};
 use plotly::layout::{AspectRatio, LayoutScene};
 use plotly::{Layout, Plot, Scatter3D};
 use std::{error::Error, time::Instant};

@@ -2,9 +2,9 @@
 
 use crate::euclidean::EuclideanVector;
 use crate::generic_hmc::HamiltonianTarget;
-use crate::stats::{collect_rhat, max_skipnan, ChainStats, ChainTracker, RunStats};
+use crate::stats::{ChainStats, ChainTracker, RunStats, collect_rhat, max_skipnan};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use ndarray::{s, Array2, Array3, ArrayView1, ArrayView2, Axis};
+use ndarray::{Array2, Array3, ArrayView1, ArrayView2, Axis, s};
 use num_traits::{Float, FromPrimitive, One, ToPrimitive, Zero};
 use rand::distr::Distribution as RandDistribution;
 // rand_distr provides the distributions, but we rely on rand's Distribution trait for compatibility.
@@ -13,9 +13,9 @@ use rand::{Rng, SeedableRng};
 use rand_distr::{Exp1, StandardNormal, StandardUniform};
 use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
 use std::error::Error;
+use std::sync::Arc;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -736,17 +736,14 @@ where
 
         let mut mom_0 = self.position.zeros_like();
         let mut mom_buf = vec![V::Scalar::zero(); dim];
-        self.mass_matrix.sample_momentum(&mut self.rng, &mut mom_buf);
+        self.mass_matrix
+            .sample_momentum(&mut self.rng, &mut mom_buf);
         mom_0.read_from_slice(&mom_buf);
         if let Some(warmup) = self.mass_warmup.as_mut() {
             warmup.running.reset();
         }
         if V::Scalar::abs(self.epsilon + V::Scalar::one()) <= V::Scalar::epsilon() {
-            self.epsilon = find_reasonable_epsilon(
-                &self.position,
-                &mom_0,
-                self.target.as_ref(),
-            );
+            self.epsilon = find_reasonable_epsilon(&self.position, &mom_0, self.target.as_ref());
         }
         self.mu = (V::Scalar::from_f64(10.0).unwrap() * self.epsilon).ln();
         dim
@@ -758,7 +755,8 @@ where
         let dim = self.position.len();
         let mut mom_0 = self.position.zeros_like();
         let mut mom_buf = vec![V::Scalar::zero(); dim];
-        self.mass_matrix.sample_momentum(&mut self.rng, &mut mom_buf);
+        self.mass_matrix
+            .sample_momentum(&mut self.rng, &mut mom_buf);
         mom_0.read_from_slice(&mom_buf);
 
         let mut grad = self.position.zeros_like();
@@ -906,13 +904,11 @@ where
                     self.mass_matrix = updated;
                     let mut probe = self.position.zeros_like();
                     let mut probe_buf = vec![V::Scalar::zero(); dim];
-                    self.mass_matrix.sample_momentum(&mut self.rng, &mut probe_buf);
+                    self.mass_matrix
+                        .sample_momentum(&mut self.rng, &mut probe_buf);
                     probe.read_from_slice(&probe_buf);
-                    self.epsilon = find_reasonable_epsilon(
-                        &self.position,
-                        &probe,
-                        self.target.as_ref(),
-                    );
+                    self.epsilon =
+                        find_reasonable_epsilon(&self.position, &probe, self.target.as_ref());
                     self.mu = (V::Scalar::from_f64(10.0).unwrap() * self.epsilon).ln();
                     self.epsilon_bar = self.epsilon;
                     self.h_bar = V::Scalar::zero();
@@ -1070,8 +1066,9 @@ where
     }
 
     epsilon = half * k * epsilon;
-    let log_accept_prob =
-        ulogp_prime - ulogp - (kinetic_energy(mass_matrix, &mom_prime) - kinetic_energy(mass_matrix, mom));
+    let log_accept_prob = ulogp_prime
+        - ulogp
+        - (kinetic_energy(mass_matrix, &mom_prime) - kinetic_energy(mass_matrix, mom));
     let mut log_accept_prob = log_accept_prob;
 
     let a = if log_accept_prob > half.ln() {
@@ -1099,54 +1096,6 @@ where
     }
 
     epsilon
-}
-
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
-pub(crate) fn build_tree<V, Target>(
-    position: V,
-    mom: V,
-    grad: V,
-    logu: V::Scalar,
-    v: i8,
-    j: usize,
-    epsilon: V::Scalar,
-    gradient_target: &Target,
-    joint_0: V::Scalar,
-    rng: &mut SmallRng,
-) -> (
-    V,
-    V,
-    V,
-    V,
-    V,
-    V,
-    V,
-    V,
-    V::Scalar,
-    usize,
-    bool,
-    V::Scalar,
-    usize,
-)
-where
-    V: EuclideanVector,
-    V::Scalar: Float + FromPrimitive,
-    Target: HamiltonianTarget<V> + Sync,
-{
-    let mass_matrix = MassMatrix::identity(position.len());
-    build_tree_with_mass(
-        position,
-        mom,
-        grad,
-        logu,
-        v,
-        j,
-        epsilon,
-        gradient_target,
-        &mass_matrix,
-        joint_0,
-        rng,
-    )
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -1351,7 +1300,13 @@ where
     V::Scalar: Float + FromPrimitive,
 {
     let mass_matrix = MassMatrix::identity(position_minus.len());
-    stop_criterion_with_mass(position_minus, position_plus, mom_minus, mom_plus, &mass_matrix)
+    stop_criterion_with_mass(
+        position_minus,
+        position_plus,
+        mom_minus,
+        mom_plus,
+        &mass_matrix,
+    )
 }
 
 fn stop_criterion_with_mass<V>(
@@ -1375,22 +1330,6 @@ where
     let dot_minus = diff.dot(&vel_minus);
     let dot_plus = diff.dot(&vel_plus);
     dot_minus >= V::Scalar::zero() && dot_plus >= V::Scalar::zero()
-}
-
-pub(crate) fn leapfrog<V, Target>(
-    position: &mut V,
-    momentum: &mut V,
-    grad: &mut V,
-    epsilon: V::Scalar,
-    gradient_target: &Target,
-) -> V::Scalar
-where
-    V: EuclideanVector,
-    V::Scalar: Float + FromPrimitive,
-    Target: HamiltonianTarget<V>,
-{
-    let mass_matrix = MassMatrix::identity(position.len());
-    leapfrog_with_mass(position, momentum, grad, epsilon, gradient_target, &mass_matrix)
 }
 
 fn leapfrog_with_mass<V, Target>(

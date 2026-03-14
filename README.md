@@ -1,14 +1,11 @@
-# Mini MCMC
+# General MCMC
 
 [![crate](https://img.shields.io/crates/v/general-mcmc.svg)](https://crates.io/crates/general-mcmc)
 [![docs](https://img.shields.io/docsrs/general-mcmc)](https://docs.rs/general-mcmc)
-![tests](https://github.com/MatteoGaetzner/general-mcmc/actions/workflows/general.yml/badge.svg)
-![security](https://github.com/MatteoGaetzner/general-mcmc/actions/workflows/audit.yml/badge.svg)
-[![codecov](https://codecov.io/gh/MatteoGaetzner/general-mcmc/graph/badge.svg?token=IDLWGMMUFI)](https://codecov.io/gh/MatteoGaetzner/general-mcmc)
 
 A compact Rust library for **Markov Chain Monte Carlo (MCMC)** methods with GPU support.
 
-This is a modified version of https://github.com/MatteoGaetzner/general-mcmc.
+This is a modified version of https://github.com/MatteoGaetzner/mini-mcmc.
 
 ## Overview
 

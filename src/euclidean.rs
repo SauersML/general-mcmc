@@ -327,6 +327,10 @@ mod burn_impl {
     use burn::prelude::{Backend, Tensor};
     use burn::tensor::Element;
     use burn::tensor::ElementConversion;
+    // Burn resolves a new tensor's dtype from a per-device policy (f32 by default), not from
+    // `B::FloatElem`, so every tensor this crate creates pins the dtype to the backend's float
+    // element; otherwise an `NdArray<f64>` backend would silently hold f32 samples.
+    use burn::tensor::TensorCreationOptions;
     use num_traits::{Float, FromPrimitive};
     use rand::Rng;
     use rand::distr::Distribution as RandDistribution;
@@ -342,7 +346,7 @@ mod burn_impl {
         let dim = diag.len();
         let base: Tensor<B, 2> = Tensor::<B, 1>::from_data(
             burn::tensor::TensorData::new(diag.to_vec(), [dim]),
-            &B::Device::default(),
+            TensorCreationOptions::<B>::float(),
         )
         .unsqueeze_dim(0);
         base.expand([n_rows, dim])
@@ -397,7 +401,7 @@ mod burn_impl {
             );
             let scale: Tensor<B, 1> = Tensor::<B, 1>::from_data(
                 burn::tensor::TensorData::new(diag.to_vec(), [self.len()]),
-                &B::Device::default(),
+                TensorCreationOptions::<B>::float(),
             );
             self.inplace(|x| x.mul(scale));
         }
@@ -415,7 +419,7 @@ mod burn_impl {
             );
             let scale: Tensor<B, 1> = Tensor::<B, 1>::from_data(
                 burn::tensor::TensorData::new(diag.to_vec(), [self.len()]),
-                &B::Device::default(),
+                TensorCreationOptions::<B>::float(),
             )
             .mul_scalar(alpha);
             self.inplace(|x| x.add(other.clone().mul(scale)));
@@ -429,7 +433,7 @@ mod burn_impl {
             assert_eq!(diag.len(), self.len(), "quad_form_diag dimension mismatch");
             let scale: Tensor<B, 1> = Tensor::<B, 1>::from_data(
                 burn::tensor::TensorData::new(diag.to_vec(), [self.len()]),
-                &B::Device::default(),
+                TensorCreationOptions::<B>::float(),
             );
             self.clone()
                 .mul(self.clone())
@@ -447,7 +451,7 @@ mod burn_impl {
             let noise = Tensor::<B, 1>::random(
                 shape,
                 burn::tensor::Distribution::Normal(0.0, 1.0),
-                &B::Device::default(),
+                TensorCreationOptions::<B>::float(),
             );
             self.inplace(|_| noise);
         }
@@ -470,7 +474,7 @@ mod burn_impl {
                 "read_from_slice called with mismatched buffer length"
             );
             let td = burn::tensor::TensorData::new(input.to_vec(), [self.len()]);
-            let updated = Tensor::<B, 1>::from_data(td, &B::Device::default());
+            let updated = Tensor::<B, 1>::from_data(td, TensorCreationOptions::<B>::float());
             self.inplace(|_| updated);
         }
     }
@@ -565,7 +569,7 @@ mod burn_impl {
             let noise = Tensor::<B, 2>::random(
                 shape,
                 burn::tensor::Distribution::Normal(0.0, 1.0),
-                &B::Device::default(),
+                TensorCreationOptions::<B>::float(),
             );
             self.inplace(|_| noise);
         }
@@ -590,7 +594,7 @@ mod burn_impl {
                 "read_from_slice called with mismatched buffer length"
             );
             let td = burn::tensor::TensorData::new(input.to_vec(), dims);
-            let updated = Tensor::<B, 2>::from_data(td, &B::Device::default());
+            let updated = Tensor::<B, 2>::from_data(td, TensorCreationOptions::<B>::float());
             self.inplace(|_| updated);
         }
     }
@@ -621,7 +625,7 @@ mod burn_impl {
             self.clone()
                 .mul(self.clone())
                 .sum_dim(1)
-                .squeeze(1)
+                .squeeze_dim(1)
                 .mul_scalar(T::from(0.5).unwrap())
         }
 
@@ -637,7 +641,7 @@ mod burn_impl {
                 .mul(self.clone())
                 .mul(inv)
                 .sum_dim(1)
-                .squeeze(1)
+                .squeeze_dim(1)
                 .mul_scalar(T::from(0.5).unwrap())
         }
 
@@ -660,7 +664,7 @@ mod burn_impl {
             let noise = Tensor::<B, 2>::random(
                 shape,
                 burn::tensor::Distribution::Normal(0.0, 1.0),
-                &B::Device::default(),
+                TensorCreationOptions::<B>::float(),
             );
             self.inplace(|_| noise);
         }
@@ -674,7 +678,7 @@ mod burn_impl {
             Tensor::<B, 1>::random(
                 burn::tensor::Shape::new([n_chains]),
                 burn::tensor::Distribution::Uniform(0.0, 1.0),
-                &B::Device::default(),
+                TensorCreationOptions::<B>::float(),
             )
         }
 

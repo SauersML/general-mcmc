@@ -44,6 +44,10 @@ println!("Candidate state: {:?}", candidate);
 
 use burn::prelude::*;
 use burn::tensor::Element;
+// Burn resolves a new tensor's dtype from a per-device policy (f32 by default), not from
+// `B::FloatElem`, so every tensor this crate creates pins the dtype to the backend's float
+// element; otherwise an `NdArray<f64>` backend would silently hold f32 samples.
+use burn::tensor::TensorCreationOptions;
 use burn::tensor::backend::AutodiffBackend;
 use ndarray::{Array1, Array2, NdFloat, arr1, arr2};
 use num_traits::Float;
@@ -266,10 +270,12 @@ where
         let (n_chains, dim) = (positions.dims()[0], positions.dims()[1]);
         assert_eq!(dim, 2, "Gaussian2D: expected dimension=2.");
 
-        let mean_tensor =
-            Tensor::<B, 2>::from_floats([[self.mean[0], self.mean[1]]], &B::Device::default())
-                .reshape([1, 2])
-                .expand([n_chains, 2]);
+        let mean_tensor = Tensor::<B, 2>::from_data(
+            [[self.mean[0], self.mean[1]]],
+            TensorCreationOptions::<B>::float(),
+        )
+        .reshape([1, 2])
+        .expand([n_chains, 2]);
 
         let delta = positions.clone() - mean_tensor;
 
@@ -280,12 +286,14 @@ where
             self.inv_cov[1][1],
         ];
         let inv_cov_t =
-            Tensor::<B, 2>::from_floats([inv_cov_data], &B::Device::default()).reshape([2, 2]);
+            Tensor::<B, 2>::from_data([inv_cov_data], TensorCreationOptions::<B>::float())
+                .reshape([2, 2]);
 
         let z = delta.clone().matmul(inv_cov_t); // shape [n_chains, 2]
-        let quad = (z * delta).sum_dim(1).squeeze(1); // shape [n_chains]
+        let quad = (z * delta).sum_dim(1).squeeze_dim(1); // shape [n_chains]
         let shape = Shape::new([n_chains]);
-        let norm_c = Tensor::<B, 1>::ones(shape, &B::Device::default()).mul_scalar(self.norm_const);
+        let norm_c = Tensor::<B, 1>::ones(shape, TensorCreationOptions::<B>::float())
+            .mul_scalar(self.norm_const);
         let half = T::from(0.5).unwrap();
         norm_c - quad.mul_scalar(half)
     }
@@ -301,8 +309,10 @@ where
         let dim = position.dims()[0];
         assert_eq!(dim, 2, "Gaussian2D: expected dimension=2.");
 
-        let mean_tensor =
-            Tensor::<B, 1>::from_floats([self.mean[0], self.mean[1]], &B::Device::default());
+        let mean_tensor = Tensor::<B, 1>::from_data(
+            [self.mean[0], self.mean[1]],
+            TensorCreationOptions::<B>::float(),
+        );
 
         let delta = position.clone() - mean_tensor;
 
@@ -310,7 +320,8 @@ where
             [self.inv_cov[0][0], self.inv_cov[0][1]],
             [self.inv_cov[1][0], self.inv_cov[1][1]],
         ];
-        let inv_cov_t = Tensor::<B, 2>::from_floats(inv_cov_data, &B::Device::default());
+        let inv_cov_t =
+            Tensor::<B, 2>::from_data(inv_cov_data, TensorCreationOptions::<B>::float());
 
         let z = delta.clone().reshape([1_i32, 2_i32]).matmul(inv_cov_t);
         let quad = (z.reshape([2_i32]) * delta).sum();
@@ -550,7 +561,7 @@ where
             .powi_scalar(2)
             .mul_scalar(100);
         let term_2 = low.neg().add_scalar(1).powi_scalar(2);
-        -(term_1 + term_2).sum_dim(1).squeeze(1)
+        -(term_1 + term_2).sum_dim(1).squeeze_dim(1)
     }
 }
 

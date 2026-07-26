@@ -38,7 +38,7 @@ where
             .powi_scalar(2)
             .mul_scalar(100);
         let term_2 = low.neg().add_scalar(1).powi_scalar(2);
-        -(term_1 + term_2).sum_dim(1).squeeze(1)
+        -(term_1 + term_2).sum_dim(1).squeeze_dim(1)
     }
 }
 

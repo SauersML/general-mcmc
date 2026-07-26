@@ -14,6 +14,10 @@ use crate::distributions::BatchedGradientTarget;
 use crate::stats::RunStats;
 use burn::prelude::*;
 use burn::tensor::Element;
+// Burn resolves a new tensor's dtype from a per-device policy (f32 by default), not from
+// `B::FloatElem`, so every tensor this crate creates pins the dtype to the backend's float
+// element; otherwise an `NdArray<f64>` backend would silently hold f32 samples.
+use burn::tensor::TensorCreationOptions;
 use burn::tensor::backend::AutodiffBackend;
 use num_traits::{Float, FromPrimitive, ToPrimitive};
 use rand::distr::Distribution as RandDistribution;
@@ -121,7 +125,7 @@ where
         let dim = initial_positions[0].len();
         let flat_data: Vec<T> = initial_positions.into_iter().flatten().collect();
         let td = TensorData::new(flat_data, [n_chains, dim]);
-        let positions = Tensor::<B, 2>::from_data(td, &B::Device::default());
+        let positions = Tensor::<B, 2>::from_data(td, TensorCreationOptions::<B>::float());
 
         let inner = BatchedGenericHMC::new(
             BatchedGradientTargetAdapter { inner: target },
@@ -141,8 +145,8 @@ where
     ///
     /// * `seed` - The new random seed value.
     pub fn set_seed(mut self, seed: u64) -> Self {
-        // Note: Burn backend seeding is global; this affects other samplers on the same backend.
-        B::seed(seed);
+        // Note: Burn seeds per device; this affects other samplers sharing the default device.
+        B::seed(&B::Device::default(), seed);
         self.inner = self.inner.set_seed(seed);
         self
     }
@@ -172,7 +176,10 @@ where
 
         if n_collect == 0 {
             let dims = self.inner.positions().dims();
-            return Tensor::<B, 3>::empty([dims[0], 0, dims[1]], &B::Device::default());
+            return Tensor::<B, 3>::empty(
+                [dims[0], 0, dims[1]],
+                TensorCreationOptions::<B>::float(),
+            );
         }
 
         let mut samples: Vec<Tensor<B, 2>> = Vec::with_capacity(n_collect);
@@ -797,7 +804,7 @@ mod tests {
     fn test_progress_bench() {
         // Use the CPU backend (NdArray) wrapped in Autodiff.
         type BackendType = Autodiff<burn::backend::NdArray>;
-        BackendType::seed(42);
+        BackendType::seed(&Default::default(), 42);
 
         // Create the Rosenbrock target (a = 1, b = 100)
         let target = Rosenbrock2D {

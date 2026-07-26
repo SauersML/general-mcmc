@@ -43,6 +43,10 @@ use burn::prelude::*;
 use burn::tensor::Tensor;
 use burn::tensor::backend::AutodiffBackend;
 use burn::tensor::{Element, ElementConversion};
+// Burn resolves a new tensor's dtype from a per-device policy (f32 by default), not from
+// `B::FloatElem`, so every tensor this crate creates pins the dtype to the backend's float
+// element; otherwise an `NdArray<f64>` backend would silently hold f32 samples.
+use burn::tensor::TensorCreationOptions;
 use num_traits::{Float, FromPrimitive};
 use rand::distr::Distribution as RandDistribution;
 // Bind to rand's Distribution to avoid mismatches from transitive rand 0.8 deps.
@@ -157,7 +161,7 @@ where
                 let pos_elem: Vec<B::FloatElem> =
                     pos.into_iter().map(B::FloatElem::from_elem).collect();
                 let td: TensorData = TensorData::new(pos_elem, [len]);
-                Tensor::<B, 1>::from_data(td, &B::Device::default())
+                Tensor::<B, 1>::from_data(td, TensorCreationOptions::<B>::float())
             })
             .collect();
         let target_accept_p_elem = B::FloatElem::from_elem(target_accept_p);
@@ -217,13 +221,16 @@ where
                 let dim = chains[0].position().dims()[0];
                 (n_chains, dim)
             };
-            return Tensor::<B, 3>::empty([n_chains, 0, dim], &B::Device::default());
+            return Tensor::<B, 3>::empty([n_chains, 0, dim], TensorCreationOptions::<B>::float());
         }
 
         let chains = self.inner.chains_mut();
         let n_chains = chains.len();
         let dim = chains[0].position().dims()[0];
-        let mut out = Tensor::<B, 3>::empty([n_chains, n_collect, dim], &B::Device::default());
+        let mut out = Tensor::<B, 3>::empty(
+            [n_chains, n_collect, dim],
+            TensorCreationOptions::<B>::float(),
+        );
 
         for (chain_idx, chain) in chains.iter_mut().enumerate() {
             chain.init_chain_state(n_collect, n_discard);
@@ -293,8 +300,8 @@ where
     /// # Returns
     /// `self` with the RNGs re-seeded.
     pub fn set_seed(mut self, seed: u64) -> Self {
-        // Note: Burn backend seeding is global; this affects other samplers on the same backend.
-        B::seed(seed);
+        // Note: Burn seeds per device; this affects other samplers sharing the default device.
+        B::seed(&B::Device::default(), seed);
         self.inner = self.inner.set_seed(seed);
         self
     }
@@ -356,7 +363,7 @@ where
             .map(B::FloatElem::from_elem)
             .collect();
         let td: TensorData = TensorData::new(position_elem, [len]);
-        let position = Tensor::<B, 1>::from_data(td, &B::Device::default());
+        let position = Tensor::<B, 1>::from_data(td, TensorCreationOptions::<B>::float());
         let inner = GenericNUTSChain::new(
             BurnGradientTarget {
                 inner: target,
@@ -379,8 +386,8 @@ where
     /// # Returns
     /// `self` with the RNG re-seeded.
     pub fn set_seed(mut self, seed: u64) -> Self {
-        // Note: Burn backend seeding is global; this affects other samplers on the same backend.
-        B::seed(seed);
+        // Note: Burn seeds per device; this affects other samplers sharing the default device.
+        B::seed(&B::Device::default(), seed);
         self.inner = self.inner.set_seed(seed);
         self
     }
@@ -397,11 +404,11 @@ where
     pub fn run(&mut self, n_collect: usize, n_discard: usize) -> Tensor<B, 2> {
         if n_collect == 0 {
             let dim = self.inner.position().dims()[0];
-            return Tensor::<B, 2>::empty([0, dim], &B::Device::default());
+            return Tensor::<B, 2>::empty([0, dim], TensorCreationOptions::<B>::float());
         }
 
         let dim = self.inner.init_chain_state(n_collect, n_discard);
-        let mut out = Tensor::<B, 2>::empty([n_collect, dim], &B::Device::default());
+        let mut out = Tensor::<B, 2>::empty([n_collect, dim], TensorCreationOptions::<B>::float());
         let total = n_collect + n_discard;
 
         for step_idx in 0..total {
@@ -446,7 +453,7 @@ where
         }
     }
     let td = TensorData::new(data, [shape[0], shape[1], shape[2]]);
-    Tensor::<B, 3>::from_data(td, &B::Device::default())
+    Tensor::<B, 3>::from_data(td, TensorCreationOptions::<B>::float())
 }
 
 #[cfg(test)]
@@ -497,7 +504,7 @@ mod tests {
         tol: Tolerance<F>,
     ) {
         let a = actual.clone().to_data();
-        let e = Tensor::<T, 1>::from(expected).to_data();
+        let e = Tensor::<T, 1>::from_data(expected, TensorCreationOptions::<T>::float()).to_data();
         a.assert_approx_eq(&e, tol);
     }
 
@@ -508,8 +515,14 @@ mod tests {
             inner: StandardNormal,
             _marker: PhantomData,
         };
-        let position = Tensor::<BackendType, 1>::from([0.0, 1.0]);
-        let mom = Tensor::<BackendType, 1>::from([1.0, 0.0]);
+        let position = Tensor::<BackendType, 1>::from_data(
+            [0.0, 1.0],
+            TensorCreationOptions::<BackendType>::float(),
+        );
+        let mom = Tensor::<BackendType, 1>::from_data(
+            [1.0, 0.0],
+            TensorCreationOptions::<BackendType>::float(),
+        );
         let epsilon: f64 = find_reasonable_epsilon(&position, &mom, &target);
         assert_eq!(epsilon, 2.0);
     }

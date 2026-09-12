@@ -2,9 +2,11 @@
 
 use crate::euclidean::EuclideanVector;
 use crate::generic_hmc::HamiltonianTarget;
-use crate::stats::{ChainStats, ChainTracker, RunStats, collect_rhat, max_skipnan};
+use crate::stats::{
+    ChainStats, ChainTracker, RunStats, collect_rhat, max_skipnan, split_rhat_mean_ess,
+};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use ndarray::{Array2, Array3, ArrayView1, ArrayView2, Axis, s};
+use ndarray::{Array2, Array3, ArrayView1, ArrayView2, ArrayView3, Axis, s};
 use num_traits::{Float, FromPrimitive, One, ToPrimitive, Zero};
 use rand::distr::Distribution as RandDistribution;
 // rand_distr provides the distributions, but we rely on rand's Distribution trait for compatibility.
@@ -13,6 +15,7 @@ use rand::{Rng, SeedableRng};
 use rand_distr::{Exp1, StandardNormal, StandardUniform};
 use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
 use std::error::Error;
+use std::fmt;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
@@ -29,6 +32,96 @@ where
 }
 
 type RunResult<T> = Result<(Array3<T>, RunStats), Box<dyn Error>>;
+
+/// Shortest open-warmup window. Split R-hat and ESS halve every chain, and each
+/// half needs two draws before a within-half variance exists.
+const MIN_WARMUP_WINDOW: usize = 4;
+
+/// When the chains of [`GenericNUTS::run_adaptive`] count as mixing: in one
+/// warmup window, every coordinate's split R-hat is below `max_rhat` and its
+/// ESS is above `min_ess`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MixingTargets {
+    pub max_rhat: f64,
+    pub min_ess: f64,
+}
+
+/// What an open-ended warmup spent before the sampler collected draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AdaptiveWarmup {
+    /// Warmup transitions per chain.
+    pub transitions: usize,
+    /// Doubling windows run.
+    pub windows: usize,
+}
+
+/// Why [`GenericNUTS::run_adaptive`] refused to collect draws.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AdaptiveWarmupError {
+    /// No chains, no requested draws, or targets that no window can meet.
+    InvalidRequest(String),
+    /// A window's split R-hat or ESS was not a number, so no test on it decides
+    /// anything.
+    NonFiniteDiagnostics { windows: usize, transitions: usize },
+    /// Step size and metric had stabilized and the window met the ESS target,
+    /// yet split R-hat stayed at or above its target in two consecutive windows:
+    /// the chains sample different regions, and a longer warmup cannot join them.
+    ChainsDisagree {
+        windows: usize,
+        transitions: usize,
+        max_rhat: f64,
+    },
+    /// The chains agreed and met the ESS target, yet one coordinate's posterior
+    /// variance moved beyond its sampling error in the same direction in two
+    /// consecutive windows: the variance does not settle as the window grows.
+    VarianceDoesNotSettle {
+        windows: usize,
+        transitions: usize,
+        coordinate: usize,
+    },
+    /// Doubling the window again would overflow `usize`.
+    WindowOverflow { windows: usize, transitions: usize },
+}
+
+impl fmt::Display for AdaptiveWarmupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidRequest(reason) => write!(f, "invalid open warmup request: {reason}"),
+            Self::NonFiniteDiagnostics {
+                windows,
+                transitions,
+            } => write!(
+                f,
+                "warmup window {windows} (after {transitions} transitions per chain) produced a split R-hat or ESS that is not a number"
+            ),
+            Self::ChainsDisagree {
+                windows,
+                transitions,
+                max_rhat,
+            } => write!(
+                f,
+                "chains disagree after {transitions} warmup transitions per chain ({windows} windows): split R-hat {max_rhat} stayed at or above its target in two consecutive windows whose step size and metric had stabilized"
+            ),
+            Self::VarianceDoesNotSettle {
+                windows,
+                transitions,
+                coordinate,
+            } => write!(
+                f,
+                "the posterior variance of coordinate {coordinate} kept moving the same way in two consecutive warmup windows while the chains agreed, after {transitions} transitions per chain ({windows} windows)"
+            ),
+            Self::WindowOverflow {
+                windows,
+                transitions,
+            } => write!(
+                f,
+                "warmup window {windows} cannot double again after {transitions} transitions per chain"
+            ),
+        }
+    }
+}
+
+impl Error for AdaptiveWarmupError {}
 
 /// Mass-matrix adaptation strategy for warmup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -547,6 +640,173 @@ where
         Ok((sample, run_stats))
     }
 
+    /// Warms up every chain until its adaptation has stabilized and the chains
+    /// agree, then collects `n_collect` draws per chain with the adapted step size
+    /// and metric.
+    ///
+    /// Warmup runs in windows that double from four transitions. Within a window
+    /// the metric is fixed and dual averaging adapts the step size. The warmup
+    /// ends at the first window where all of these hold:
+    /// - the step size has stabilized: the window's mean acceptance statistic is
+    ///   within the stationarity boundary of the target, in standard errors of
+    ///   that mean;
+    /// - the metric has stabilized: every coordinate's log posterior variance
+    ///   differs from the previous window's by at most the boundary for `dim`
+    ///   simultaneous statistics, in units of its sampling error
+    ///   `sqrt(2/ESS)` in each window;
+    /// - the chains mix: split R-hat and ESS meet `targets` in every coordinate.
+    ///
+    /// The boundary for `k` statistics after `n` transitions is
+    /// `sqrt(2 ln k + 2 ln ln n)`. Under stationarity the chance that a window
+    /// crosses it falls like `1/ln n`, so the expected number of windows is
+    /// finite, while a departure that grows with the window still crosses it.
+    /// A window whose metric had not stabilized replaces the metric with the
+    /// pooled within-chain covariance of its draws, regularized as configured,
+    /// and restarts step-size adaptation.
+    ///
+    /// Instead of doubling forever, the warmup refuses when two consecutive
+    /// windows have stabilized but their chains disagree, or have agreeing
+    /// chains but one coordinate's variance keeps moving the same way.
+    pub fn run_adaptive(
+        &mut self,
+        n_collect: usize,
+        targets: MixingTargets,
+    ) -> Result<(Array3<V::Scalar>, RunStats, AdaptiveWarmup), AdaptiveWarmupError> {
+        let n_chains = self.chains.len();
+        if n_chains == 0 || n_collect == 0 {
+            return Err(AdaptiveWarmupError::InvalidRequest(format!(
+                "open warmup needs at least one chain and one requested draw, got {n_chains} chains and {n_collect} draws"
+            )));
+        }
+        if !(targets.max_rhat.is_finite()
+            && targets.max_rhat > 1.0
+            && targets.min_ess.is_finite()
+            && targets.min_ess >= 0.0)
+        {
+            return Err(AdaptiveWarmupError::InvalidRequest(format!(
+                "mixing targets need a finite max_rhat above 1 and a finite non-negative min_ess, got {targets:?}"
+            )));
+        }
+        self.chains
+            .par_iter_mut()
+            .for_each(|chain| chain.begin_open_warmup());
+        let target_accept = self.chains[0]
+            .target_accept_p
+            .to_f64()
+            .expect("target acceptance is representable as f64");
+        let dim = self.chains[0].position.len();
+        let mass_config = self.chains[0].mass_config.clone();
+        let mut window_len = MIN_WARMUP_WINDOW;
+        let mut transitions = 0usize;
+        let mut windows = 0usize;
+        let mut previous: Option<WindowMoments> = None;
+        let mut disagreeing_windows = 0usize;
+        let mut drifting: Option<(usize, bool, usize)> = None;
+        loop {
+            let outputs: Vec<(Array2<V::Scalar>, Vec<V::Scalar>)> = self
+                .chains
+                .par_iter_mut()
+                .map(|chain| chain.warmup_window(window_len))
+                .collect();
+            transitions += window_len;
+            windows += 1;
+            let views: Vec<ArrayView2<V::Scalar>> =
+                outputs.iter().map(|(draws, _)| draws.view()).collect();
+            let sample = ndarray::stack(Axis(0), &views)
+                .expect("expected stacking warmup windows to succeed");
+            let moments = WindowMoments::from_sample(sample.view()).ok_or(
+                AdaptiveWarmupError::NonFiniteDiagnostics {
+                    windows,
+                    transitions,
+                },
+            )?;
+            let total_transitions = n_chains * transitions;
+            let step_stable = acceptance_z(
+                outputs.iter().map(|(_, accept)| accept.as_slice()),
+                target_accept,
+            ) <= stationarity_boundary(1, total_transitions);
+            let change = previous
+                .as_ref()
+                .map(|earlier| moments.largest_variance_change(earlier));
+            let variance_bound = stationarity_boundary(dim, total_transitions);
+            let metric_stable = change.is_some_and(|change| change.z <= variance_bound);
+            let ess_met = moments.min_ess > targets.min_ess;
+            let chains_agree = moments.max_rhat < targets.max_rhat;
+            if step_stable && metric_stable && ess_met && chains_agree {
+                break;
+            }
+            if step_stable && metric_stable && moments.min_within_ess > targets.min_ess {
+                disagreeing_windows += 1;
+                if disagreeing_windows == 2 {
+                    return Err(AdaptiveWarmupError::ChainsDisagree {
+                        windows,
+                        transitions,
+                        max_rhat: moments.max_rhat,
+                    });
+                }
+            } else {
+                disagreeing_windows = 0;
+            }
+            drifting = match change {
+                Some(change) if ess_met && chains_agree && change.z > variance_bound => {
+                    let in_a_row = match drifting {
+                        Some((coordinate, grew, count))
+                            if coordinate == change.coordinate && grew == change.grew =>
+                        {
+                            count + 1
+                        }
+                        _ => 1,
+                    };
+                    if in_a_row == 2 {
+                        return Err(AdaptiveWarmupError::VarianceDoesNotSettle {
+                            windows,
+                            transitions,
+                            coordinate: change.coordinate,
+                        });
+                    }
+                    Some((change.coordinate, change.grew, in_a_row))
+                }
+                _ => None,
+            };
+            if !metric_stable {
+                let draws: Vec<&Array2<V::Scalar>> = outputs.iter().map(|(draws, _)| draws).collect();
+                if let Some(metric) = pooled_metric(&draws, &mass_config) {
+                    for chain in self.chains.iter_mut() {
+                        chain.mass_matrix = metric.clone();
+                        chain.restart_step_size_adaptation();
+                    }
+                }
+            }
+            previous = Some(moments);
+            window_len = window_len
+                .checked_mul(2)
+                .ok_or(AdaptiveWarmupError::WindowOverflow {
+                    windows,
+                    transitions,
+                })?;
+        }
+        self.chains
+            .par_iter_mut()
+            .for_each(|chain| chain.end_warmup());
+        let collected: Vec<Array2<V::Scalar>> = self
+            .chains
+            .par_iter_mut()
+            .map(|chain| chain.collect(n_collect))
+            .collect();
+        let views: Vec<ArrayView2<V::Scalar>> = collected.iter().map(|draws| draws.view()).collect();
+        let sample =
+            ndarray::stack(Axis(0), &views).expect("expected stacking chain samples to succeed");
+        let run_stats = RunStats::from(sample.view());
+        Ok((
+            sample,
+            run_stats,
+            AdaptiveWarmup {
+                transitions,
+                windows,
+            },
+        ))
+    }
+
     pub fn set_seed(mut self, seed: u64) -> Self {
         for (i, chain) in self.chains.iter_mut().enumerate() {
             let chain_seed = seed + i as u64 + 1;
@@ -577,6 +837,9 @@ where
     h_bar: V::Scalar,
     mass_matrix: MassMatrix<V::Scalar>,
     mass_warmup: Option<MassMatrixWarmup<V::Scalar>>,
+    /// The mass-matrix configuration with the dense-to-diagonal fallback already
+    /// resolved, kept for open-ended warmup.
+    mass_config: NUTSMassMatrixConfig,
     rng: SmallRng,
 }
 
@@ -626,6 +889,10 @@ where
                 Some(MassMatrixWarmup::new(dim, mass_config.clone(), true))
             }
         };
+        let mass_config = NUTSMassMatrixConfig {
+            adaptation,
+            ..mass_config
+        };
 
         Self {
             target,
@@ -643,6 +910,7 @@ where
             h_bar: V::Scalar::zero(),
             mass_matrix,
             mass_warmup,
+            mass_config,
             rng,
         }
     }
@@ -750,6 +1018,81 @@ where
     }
 
     pub fn step(&mut self) {
+        self.step_accept();
+    }
+
+    /// Starts an open-ended warmup: `run`'s windowed schedule is switched off, a
+    /// step size is found for the current metric, and dual averaging runs until
+    /// `end_warmup`.
+    fn begin_open_warmup(&mut self) {
+        self.mass_warmup = None;
+        self.n_collect = 0;
+        self.n_discard = usize::MAX;
+        self.restart_step_size_adaptation();
+    }
+
+    /// Finds a step size for the current metric and restarts dual averaging from it.
+    fn restart_step_size_adaptation(&mut self) {
+        let dim = self.position.len();
+        let mut probe = self.position.zeros_like();
+        let mut probe_buf = vec![V::Scalar::zero(); dim];
+        self.mass_matrix
+            .sample_momentum(&mut self.rng, &mut probe_buf);
+        probe.read_from_slice(&probe_buf);
+        self.epsilon = find_reasonable_epsilon_with_mass(
+            &self.position,
+            &probe,
+            self.target.as_ref(),
+            &self.mass_matrix,
+        );
+        self.mu = (V::Scalar::from_f64(10.0).unwrap() * self.epsilon).ln();
+        self.epsilon_bar = self.epsilon;
+        self.h_bar = V::Scalar::zero();
+        self.m = 0;
+    }
+
+    /// Runs `len` adapting transitions and returns the positions they visited, one
+    /// row per transition, with their acceptance statistics.
+    fn warmup_window(&mut self, len: usize) -> (Array2<V::Scalar>, Vec<V::Scalar>) {
+        let dim = self.position.len();
+        let mut draws = Array2::<V::Scalar>::zeros((len, dim));
+        let mut accept = Vec::with_capacity(len);
+        let mut scratch = vec![V::Scalar::zero(); dim];
+        for t in 0..len {
+            accept.push(self.step_accept());
+            self.position.write_to_slice(&mut scratch);
+            draws
+                .slice_mut(s![t, ..])
+                .assign(&ArrayView1::from(&scratch));
+        }
+        (draws, accept)
+    }
+
+    /// Freezes the dual-averaged step size for every later transition.
+    fn end_warmup(&mut self) {
+        self.n_discard = self.m;
+        self.epsilon = self.epsilon_bar;
+    }
+
+    /// Runs `n` transitions with adaptation frozen and returns the positions they
+    /// visited.
+    fn collect(&mut self, n: usize) -> Array2<V::Scalar> {
+        let dim = self.position.len();
+        let mut draws = Array2::<V::Scalar>::zeros((n, dim));
+        let mut scratch = vec![V::Scalar::zero(); dim];
+        for t in 0..n {
+            self.step_accept();
+            self.position.write_to_slice(&mut scratch);
+            draws
+                .slice_mut(s![t, ..])
+                .assign(&ArrayView1::from(&scratch));
+        }
+        draws
+    }
+
+    /// One NUTS transition. Returns its acceptance statistic `alpha / n_alpha`, the
+    /// quantity dual averaging steers toward `target_accept_p`.
+    fn step_accept(&mut self) -> V::Scalar {
         self.m += 1;
 
         let dim = self.position.len();
@@ -877,14 +1220,12 @@ where
             j += 1
         }
 
+        let accept =
+            alpha / V::Scalar::from_usize(n_alpha).expect("successful conversion of n_alpha");
         let mut eta = V::Scalar::one()
             / V::Scalar::from_usize(self.m + self.t_0).expect("successful conversion of m + t_0");
-        self.h_bar = (V::Scalar::one() - eta) * self.h_bar
-            + eta
-                * (self.target_accept_p
-                    - alpha
-                        / V::Scalar::from_usize(n_alpha)
-                            .expect("successful conversion of n_alpha"));
+        self.h_bar =
+            (V::Scalar::one() - eta) * self.h_bar + eta * (self.target_accept_p - accept);
         if self.m <= self.n_discard {
             let m = V::Scalar::from_usize(self.m).expect("successful conversion of m");
             self.epsilon = (self.mu - m.sqrt() / self.gamma * self.h_bar).exp();
@@ -918,7 +1259,211 @@ where
         } else {
             self.epsilon = self.epsilon_bar;
         }
+        accept
     }
+}
+
+/// Pooled within-chain moments and split diagnostics of one warmup window.
+struct WindowMoments {
+    /// Natural log of each coordinate's pooled within-chain variance, `-inf` for
+    /// a coordinate that no chain moved in.
+    log_variance: Vec<f64>,
+    /// Each coordinate's ESS summed over chains, each chain split on its own. It
+    /// prices the pooled within-chain variance, and unlike the multi-chain ESS it
+    /// stays large when chains sample separate regions well.
+    within_ess: Vec<f64>,
+    min_within_ess: f64,
+    max_rhat: f64,
+    /// Multi-chain split ESS, smallest over coordinates.
+    min_ess: f64,
+}
+
+/// The coordinate whose log variance moved most between two windows, in units of
+/// its sampling error.
+#[derive(Clone, Copy)]
+struct VarianceChange {
+    z: f64,
+    coordinate: usize,
+    grew: bool,
+}
+
+impl WindowMoments {
+    /// `None` when split R-hat or ESS is not a number in some coordinate.
+    fn from_sample<S: ToPrimitive + Clone>(sample: ArrayView3<S>) -> Option<Self> {
+        let (rhat, ess) = split_rhat_mean_ess(sample.view());
+        if rhat.iter().chain(ess.iter()).any(|value| value.is_nan()) {
+            return None;
+        }
+        let (n_chains, len, dim) = sample.dim();
+        let mut within_ess = vec![0.0; dim];
+        for c in 0..n_chains {
+            let (_, chain_ess) = split_rhat_mean_ess(sample.slice(s![c..c + 1, .., ..]));
+            if chain_ess.iter().any(|value| value.is_nan()) {
+                return None;
+            }
+            for (total, value) in within_ess.iter_mut().zip(chain_ess.iter()) {
+                *total += value;
+            }
+        }
+        let min_within_ess = within_ess.iter().copied().fold(f64::INFINITY, f64::min);
+        let dof = (n_chains * (len - 1)) as f64;
+        let mut log_variance = Vec::with_capacity(dim);
+        for d in 0..dim {
+            let mut sum_sq = 0.0;
+            for c in 0..n_chains {
+                let values: Vec<f64> = sample
+                    .slice(s![c, .., d])
+                    .iter()
+                    .map(|x| x.to_f64().expect("draw is representable as f64"))
+                    .collect();
+                let mean = values.iter().sum::<f64>() / len as f64;
+                sum_sq += values.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>();
+            }
+            log_variance.push((sum_sq / dof).ln());
+        }
+        let max_rhat = rhat.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let min_ess = ess.iter().copied().fold(f64::INFINITY, f64::min);
+        Some(Self {
+            log_variance,
+            within_ess,
+            min_within_ess,
+            max_rhat,
+            min_ess,
+        })
+    }
+
+    fn largest_variance_change(&self, earlier: &Self) -> VarianceChange {
+        let mut largest = VarianceChange {
+            z: 0.0,
+            coordinate: 0,
+            grew: false,
+        };
+        for d in 0..self.log_variance.len() {
+            let delta = self.log_variance[d] - earlier.log_variance[d];
+            let error = (2.0 / self.within_ess[d] + 2.0 / earlier.within_ess[d]).sqrt();
+            let z = if delta.is_nan() {
+                f64::INFINITY
+            } else {
+                delta.abs() / error
+            };
+            if !(z <= largest.z) {
+                largest = VarianceChange {
+                    z,
+                    coordinate: d,
+                    grew: delta > 0.0,
+                };
+            }
+        }
+        largest
+    }
+}
+
+/// Distance of the mean acceptance statistic from `target`, in standard errors of
+/// that mean.
+fn acceptance_z<'a, S: ToPrimitive + 'a>(windows: impl Iterator<Item = &'a [S]>, target: f64) -> f64 {
+    let values: Vec<f64> = windows
+        .flat_map(|window| {
+            window
+                .iter()
+                .map(|accept| accept.to_f64().expect("acceptance is representable as f64"))
+        })
+        .collect();
+    let n = values.len() as f64;
+    let mean = values.iter().sum::<f64>() / n;
+    let variance = values.iter().map(|a| (a - mean) * (a - mean)).sum::<f64>() / (n - 1.0);
+    let error = (variance / n).sqrt();
+    let gap = (mean - target).abs();
+    if error > 0.0 {
+        gap / error
+    } else if gap == 0.0 {
+        0.0
+    } else {
+        f64::INFINITY
+    }
+}
+
+/// Boundary for the largest of `simultaneous` standardized statistics after
+/// `transitions` warmup transitions: `sqrt(2 ln simultaneous + 2 ln ln transitions)`.
+/// Every window has at least four transitions, so the double logarithm is positive.
+fn stationarity_boundary(simultaneous: usize, transitions: usize) -> f64 {
+    (2.0 * (simultaneous as f64).ln() + 2.0 * (transitions as f64).ln().ln()).sqrt()
+}
+
+/// The metric one warmup window's draws support: the pooled within-chain
+/// covariance, regularized toward the identity and floored at the configured
+/// jitter. `None` keeps the current metric, when adaptation is off or a dense
+/// factorization fails.
+fn pooled_metric<S: Float + FromPrimitive>(
+    windows: &[&Array2<S>],
+    config: &NUTSMassMatrixConfig,
+) -> Option<MassMatrix<S>> {
+    let dim = windows.first()?.ncols();
+    let dense = match config.adaptation {
+        MassMatrixAdaptation::None => return None,
+        MassMatrixAdaptation::Diagonal => false,
+        MassMatrixAdaptation::Dense => true,
+    };
+    let dof: usize = windows
+        .iter()
+        .map(|draws| draws.nrows().saturating_sub(1))
+        .sum();
+    if dof == 0 {
+        return None;
+    }
+    let n_denom = S::from_usize(dof)?;
+    let reg = S::from_f64(config.regularize)?;
+    let one_minus_reg = S::one() - reg;
+    let jitter = metric_jitter::<S>(config)?;
+    let mut sums = vec![S::zero(); if dense { dim * dim } else { dim }];
+    let mut centered = vec![S::zero(); dim];
+    for draws in windows {
+        let len = S::from_usize(draws.nrows())?;
+        let means: Vec<S> = (0..dim)
+            .map(|d| draws.column(d).iter().fold(S::zero(), |acc, &x| acc + x) / len)
+            .collect();
+        for row in draws.rows() {
+            for d in 0..dim {
+                centered[d] = row[d] - means[d];
+            }
+            if dense {
+                for i in 0..dim {
+                    for j in i..dim {
+                        sums[i * dim + j] = sums[i * dim + j] + centered[i] * centered[j];
+                    }
+                }
+            } else {
+                for d in 0..dim {
+                    sums[d] = sums[d] + centered[d] * centered[d];
+                }
+            }
+        }
+    }
+    if dense {
+        for i in 0..dim {
+            for j in i..dim {
+                let raw = sums[i * dim + j] / n_denom;
+                let v = if i == j {
+                    (one_minus_reg * raw + reg).max(jitter)
+                } else {
+                    one_minus_reg * raw
+                };
+                sums[i * dim + j] = v;
+                sums[j * dim + i] = v;
+            }
+        }
+        MassMatrix::dense_from_cov(sums, dim, jitter)
+    } else {
+        let var = sums
+            .into_iter()
+            .map(|raw| (one_minus_reg * raw / n_denom + reg).max(jitter))
+            .collect();
+        Some(MassMatrix::diagonal_from_var(var, jitter))
+    }
+}
+
+/// The configured jitter, floored where a metric inverse stays representable.
+fn metric_jitter<S: FromPrimitive>(config: &NUTSMassMatrixConfig) -> Option<S> {
+    S::from_f64(config.jitter.max(1e-10))
 }
 
 fn kinetic_energy<V: EuclideanVector>(mass: &MassMatrix<V::Scalar>, mom: &V) -> V::Scalar
@@ -952,7 +1497,7 @@ fn maybe_update_mass_matrix<S: Float + FromPrimitive>(
     let n_denom = S::from_usize(n - 1).unwrap();
     let reg = S::from_f64(warmup.config.regularize).unwrap();
     let one_minus_reg = S::one() - reg;
-    let jitter = S::from_f64(warmup.config.jitter.max(1e-10)).unwrap();
+    let jitter = metric_jitter::<S>(&warmup.config).unwrap();
     match warmup.config.adaptation {
         MassMatrixAdaptation::None => None,
         MassMatrixAdaptation::Diagonal => {
@@ -1359,9 +1904,119 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        MassMatrix, MassMatrixAdaptation, MassMatrixWarmup, NUTSMassMatrixConfig,
-        maybe_update_mass_matrix,
+        AdaptiveWarmupError, GenericNUTS, MassMatrix, MassMatrixAdaptation, MassMatrixWarmup,
+        MixingTargets, NUTSMassMatrixConfig, maybe_update_mass_matrix, pooled_metric,
+        stationarity_boundary,
     };
+    use crate::generic_hmc::HamiltonianTarget;
+    use ndarray::{Array1, Array2};
+
+    struct UnitGaussian;
+
+    impl HamiltonianTarget<Array1<f64>> for UnitGaussian {
+        fn logp_and_grad(&self, position: &Array1<f64>, grad: &mut Array1<f64>) -> f64 {
+            grad.assign(&position.mapv(|x| -x));
+            -0.5 * position.dot(position)
+        }
+    }
+
+    /// Equal mixture of N(-center, 1) and N(center, 1) on the line.
+    struct TwoModes {
+        center: f64,
+    }
+
+    impl HamiltonianTarget<Array1<f64>> for TwoModes {
+        fn logp_and_grad(&self, position: &Array1<f64>, grad: &mut Array1<f64>) -> f64 {
+            let x = position[0];
+            let y = self.center * x;
+            let log_cosh = y.abs() + (-2.0 * y.abs()).exp().ln_1p() - std::f64::consts::LN_2;
+            grad[0] = -x + self.center * y.tanh();
+            -0.5 * (x * x + self.center * self.center) + log_cosh
+        }
+    }
+
+    #[test]
+    fn open_warmup_ends_on_a_unit_gaussian_and_samples_it() {
+        let initial = vec![Array1::from_elem(4, 2.0), Array1::from_elem(4, -2.0)];
+        let mut sampler = GenericNUTS::new_with_mass_matrix(
+            UnitGaussian,
+            initial,
+            0.9,
+            NUTSMassMatrixConfig::default(),
+        )
+        .set_seed(7);
+        let (sample, _, warmup) = sampler
+            .run_adaptive(
+                400,
+                MixingTargets {
+                    max_rhat: 1.1,
+                    min_ess: 100.0,
+                },
+            )
+            .expect("a unit Gaussian warms up");
+        assert_eq!(sample.dim(), (2, 400, 4));
+        // The metric test compares a window with its predecessor.
+        assert!(warmup.windows >= 2, "{warmup:?}");
+        let draws = sample
+            .into_shape_with_order((800, 4))
+            .expect("chains flatten into one draw matrix");
+        for d in 0..4 {
+            let column = draws.column(d);
+            let mean = column.mean().expect("non-empty column");
+            let var = column.var(1.0);
+            assert!(mean.abs() < 0.3, "coordinate {d} mean {mean}");
+            assert!((var - 1.0).abs() < 0.35, "coordinate {d} variance {var}");
+        }
+    }
+
+    #[test]
+    fn open_warmup_refuses_chains_held_in_separate_modes() {
+        let initial = vec![Array1::from_elem(1, -8.0), Array1::from_elem(1, 8.0)];
+        let mut sampler = GenericNUTS::new_with_mass_matrix(
+            TwoModes { center: 8.0 },
+            initial,
+            0.9,
+            NUTSMassMatrixConfig::default(),
+        )
+        .set_seed(11);
+        match sampler.run_adaptive(
+            100,
+            MixingTargets {
+                max_rhat: 1.1,
+                min_ess: 100.0,
+            },
+        ) {
+            Err(AdaptiveWarmupError::ChainsDisagree { .. }) => {}
+            other => panic!("expected the separated chains to be refused, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pooled_metric_centres_each_chain_on_its_own_mean() {
+        let low = Array2::from_shape_vec((4, 1), vec![-11.0, -9.0, -11.0, -9.0])
+            .expect("4x1 draws");
+        let high =
+            Array2::from_shape_vec((4, 1), vec![9.0, 11.0, 9.0, 11.0]).expect("4x1 draws");
+        let config = NUTSMassMatrixConfig {
+            regularize: 0.0,
+            ..NUTSMassMatrixConfig::default()
+        };
+        match pooled_metric(&[&low, &high], &config) {
+            // Each chain deviates by 1 from its own mean: 8 squares over 6 degrees
+            // of freedom, whatever the distance between the chains.
+            Some(MassMatrix::Diagonal { sqrt, .. }) => {
+                assert!((sqrt[0] * sqrt[0] - 8.0 / 6.0).abs() < 1e-12);
+            }
+            _ => panic!("expected a diagonal metric"),
+        }
+    }
+
+    #[test]
+    fn stationarity_boundary_grows_with_statistics_and_transitions() {
+        assert!(stationarity_boundary(1, 4) > 0.0);
+        assert!(stationarity_boundary(10, 1000) > stationarity_boundary(1, 1000));
+        assert!(stationarity_boundary(1, 1_000_000) > stationarity_boundary(1, 1000));
+    }
 
     #[test]
     fn diagonal_mass_matrix_kinetic_and_inv_mul_are_consistent() {

@@ -1,6 +1,6 @@
 [package]
 name = "general-mcmc"
-version = "0.10.0"
+version = "0.10.1"
 edition = "2024"
 authors = ["Matteo Gätzner <matteo.gatzner@gmail.com>"]
 license = "Apache-2.0"

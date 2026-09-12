@@ -1382,9 +1382,28 @@ fn acceptance_z<'a, S: ToPrimitive + 'a>(windows: impl Iterator<Item = &'a [S]>,
     }
 }
 
-/// Boundary for the largest of `simultaneous` standardized statistics after
-/// `transitions` warmup transitions: `sqrt(2 ln simultaneous + 2 ln ln transitions)`.
-/// Every window has at least four transitions, so the double logarithm is positive.
+/// Boundary for the largest of `d = simultaneous` standardized statistics after
+/// `n = transitions` warmup transitions: `b = sqrt(2 ln d + 2 ln ln n)`.
+///
+/// Derivation. Under stationarity each statistic is approximately `N(0, 1)`,
+/// with Gaussian tail `P(|Z| > b) <= sqrt(2/pi) exp(-b^2/2) / b`. The union bound
+/// over the `d` statistics, together with `exp(-b^2/2) = 1 / (d ln n)` at this
+/// `b`, gives
+///
+/// `P(max_i |Z_i| > b) <= sqrt(2/pi) / (b ln n)`.
+///
+/// So a stationary window fails with probability of order `1 / (b ln n)`. That
+/// probability shrinks as the windows double. The chance of still warming up at
+/// window `k` is a product of shrinking factors, which falls faster than the
+/// window length `2^k` grows, so the expected warmup is finite.
+///
+/// A real departure `delta` enters its statistic as `delta * sqrt(ESS)`. That
+/// grows like `sqrt(n)` while `b` grows only like `sqrt(ln ln n)`, so a
+/// persistent departure still crosses the boundary.
+///
+/// No term is tuned: `d` is how many statistics the window tests and `n` is the
+/// warmup already spent. Every window has at least four transitions, so
+/// `ln ln n > 0`.
 fn stationarity_boundary(simultaneous: usize, transitions: usize) -> f64 {
     (2.0 * (simultaneous as f64).ln() + 2.0 * (transitions as f64).ln().ln()).sqrt()
 }

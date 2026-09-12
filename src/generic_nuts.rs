@@ -2012,10 +2012,10 @@ mod tests {
 
     #[test]
     fn pooled_metric_centres_each_chain_on_its_own_mean() {
-        let low = Array2::from_shape_vec((4, 1), vec![-11.0, -9.0, -11.0, -9.0])
+        let low = Array2::from_shape_vec((4, 1), vec![-11.0_f64, -9.0, -11.0, -9.0])
             .expect("4x1 draws");
         let high =
-            Array2::from_shape_vec((4, 1), vec![9.0, 11.0, 9.0, 11.0]).expect("4x1 draws");
+            Array2::from_shape_vec((4, 1), vec![9.0_f64, 11.0, 9.0, 11.0]).expect("4x1 draws");
         let config = NUTSMassMatrixConfig {
             regularize: 0.0,
             ..NUTSMassMatrixConfig::default()
